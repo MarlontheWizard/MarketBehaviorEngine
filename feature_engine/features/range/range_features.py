@@ -47,8 +47,85 @@ class RangeFeatureConfig:
     """
 
     windows: tuple[int, ...] = (20, 50, 100)
+    
     atr_window: int = 14
+    
     zone_pct: float = 0.15
+    
     slope_window: int = 5
+    
     min_periods_ratio: float = 0.8
+    
     eps: float = 1e-12
+
+
+
+class RangeFeatureExtractor:
+
+    """
+
+    Extracts dynamic range-behavior features.
+
+    This class does NOT predict.
+
+    This class does NOT produce buy/sell signals.
+
+    This class describes how the current rolling market window behaves.
+
+    Feature families:
+
+        1. Range geometry
+
+        2. ATR-normalized width
+
+        3. Position inside range
+
+        4. Directional efficiency
+
+        5. Boundary zones and touch counts
+
+        6. Touch balance or two-sided activity
+
+        7. Midpoint rotation
+
+        8. Wick rejection near boundaries
+
+        9. Slope / flatness
+
+        10. Volatility compression
+
+        11. Lifecycle/change features
+
+        12. Multi-window comparison features
+
+    """
+
+    def __init__(
+        self,
+        config: Optional[RangeFeatureConfig] = None,
+        *,
+        windows: Optional[Iterable[int]] = None,
+        atr_window: Optional[int] = None,
+        zone_pct: Optional[float] = None,
+        slope_window: Optional[int] = None,
+    ) -> None:
+
+        self.config = config or RangeFeatureConfig()
+
+        if windows is not None:
+
+            self.config.windows = tuple(windows)
+
+        if atr_window is not None:
+
+            self.config.atr_window = atr_window
+
+        if zone_pct is not None:
+
+            self.config.zone_pct = zone_pct
+
+        if slope_window is not None:
+
+            self.config.slope_window = slope_window
+
+        self._validate_config()
