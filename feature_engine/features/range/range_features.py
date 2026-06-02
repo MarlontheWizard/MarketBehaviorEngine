@@ -144,10 +144,13 @@ class RangeFeatureExtractor:
         """
 
         """
+        TODO: 
+        
         Z Score = ((X - u) / sigma) where X is the most recent data point, u is the rolling average (mean) over the defined lookback window, and 
         sigma is the rolling standard deviation over the same window.
         """
-        data = self._standardize_ohlc_columns(df)
+        
+        data = self._standardize_ohlc_columns(df) #Ensures data from MarketNormalizationEngine is compatible.
 
         data = data.copy()
 
@@ -174,5 +177,76 @@ class RangeFeatureExtractor:
             data = self._add_lifecycle_features(data, window)
 
         data = self._add_multi_window_comparison_features(data)
+
+        return data
+
+
+
+    # ---------------------------------------------------------------------
+    #                          Helper Functions
+    # ---------------------------------------------------------------------
+
+    def _standardize_ohlc_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+
+        """
+        Makes this extractor compatible with the output from my MarketNormalizationEngine.
+        """
+
+        data = df.copy()
+
+        lower_map: Dict[str, str] = {col.lower(): col for col in data.columns}
+
+        rename_map = {}
+
+        column_aliases = {
+            "timestamp": ["timestamp", "date", "datetime", "time"],
+            "open": ["open", "o"],
+            "high": ["high", "h"],
+            "low": ["low", "l"],
+            "close": ["close", "c"],
+            "volume": ["volume", "vol", "tick_volume"],
+        }
+
+        for standard_name, aliases in column_aliases.items():
+
+            for alias in aliases:
+
+                if alias in lower_map:
+
+                    rename_map[lower_map[alias]] = standard_name
+
+                    break
+
+        data = data.rename(columns=rename_map)
+
+        required = ["open", "high", "low", "close"]
+
+        missing = [col for col in required if col not in data.columns]
+
+        if missing:
+
+            raise ValueError(
+
+                f"Missing required OHLC columns: {missing}. "
+
+                f"Available columns: {list(df.columns)}. "
+
+                "Expected columns like Open, High, Low, Close or open, high, low, close."
+
+            )
+
+        if "timestamp" in data.columns:
+
+            data["timestamp"] = pd.to_datetime(data["timestamp"])
+
+            data = data.sort_values("timestamp").reset_index(drop=True)
+
+        for col in ["open", "high", "low", "close"]:
+
+            data[col] = pd.to_numeric(data[col], errors="coerce")
+
+        if "volume" in data.columns:
+
+            data["volume"] = pd.to_numeric(data["volume"], errors="coerce")
 
         return data
