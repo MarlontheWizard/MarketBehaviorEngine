@@ -36,6 +36,15 @@ class RangeFeatureConfig:
     
         Window used when measuring change in feature values since they are not static.
 
+    zscore_windows:
+
+        Window used when measuring rolling z-score
+        
+    zscore_clip:
+
+        Used to stop an outlier from distorting the classification model. If I set the clip to 5, then any standard deviation above or below the
+        clip will become the clip. 
+        
     min_periods_ratio:
     
         Required fraction, or data, of a rolling window before initiating the calculation of a feature.
@@ -53,10 +62,16 @@ class RangeFeatureConfig:
     zone_pct: float = 0.15
     
     slope_window: int = 5
+
+    #Note that it is bigger than main window. I am asking "Is behavior in window unusual from previous data?
+    zscore_windows: tuple[int, ...] = (100, 250) 
+
+    zscore_clip: float = 5.0
     
     min_periods_ratio: float = 0.8
     
     eps: float = 1e-12
+
 
 
 
@@ -149,9 +164,7 @@ class RangeFeatureExtractor:
         Z Score = ((X - u) / sigma) where X is the most recent data point, u is the rolling average (mean) over the defined lookback window, and 
         sigma is the rolling standard deviation over the same window.
         """
-        
-        data = self._standardize_ohlc_columns(df) #Ensures data from MarketNormalizationEngine is compatible.
-
+    
         data = data.copy()
 
         self._validate_ohlc_data(data)
@@ -176,77 +189,60 @@ class RangeFeatureExtractor:
 
             data = self._add_lifecycle_features(data, window)
 
+        
         data = self._add_multi_window_comparison_features(data)
 
+        #Now that base features are added we can calculate rolling z-score for each one
+        data = self._add_rolling_zscores(data)
+        
         return data
 
+
+    # ---------------------------------------------------------------------
+    #                          Rolling Z-SCORE
+    # ---------------------------------------------------------------------
+
+    def _add_rolling_zscores(self, df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds rolling z-scores.
+
+    The rolling mean/std are shifted by 1 so the current row is compared
+    only against prior feature history. This avoids the current value 
+    influencing its own normalization.
+    """
+
+        for base_col in self._zscore_feature_columns(df):
+        
+            if base_col not in df.columns:
+                
+                continue
+
+            x = df[base_col].astype(float)
+
+            for z_window in self.config.zscore_windows:
+                
+                min_periods = self._min_periods(z_window)
+
+                rolling_mean = (
+                    x.rolling(
+                        window=z_window,
+                        min_periods=min_periods,
+                    ).mean().shift(1)
+                )
+
+                rolling_std = (x.rolling(window=z_window, min_periods=min_periods).std(ddof=0).shift(1))
+
+                z_col = f"{base_col}_z{z_window}"
+
+                safe_std = rolling_std.where( rolling_std > self.config.eps, np.nan)
+
+                z = (x - rolling_mean) / safe_std
+
+                df[z_col] = z.clip(lower=-self.config.zscore_clip, upper=self.config.zscore_clip)
+
+        return df
 
 
     # ---------------------------------------------------------------------
     #                          Helper Functions
     # ---------------------------------------------------------------------
-
-    def _standardize_ohlc_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-
-        """
-        Makes this extractor compatible with the output from my MarketNormalizationEngine.
-        """
-
-        data = df.copy()
-
-        lower_map: Dict[str, str] = {col.lower(): col for col in data.columns}
-
-        rename_map = {}
-
-        column_aliases = {
-            "timestamp": ["timestamp", "date", "datetime", "time"],
-            "open": ["open", "o"],
-            "high": ["high", "h"],
-            "low": ["low", "l"],
-            "close": ["close", "c"],
-            "volume": ["volume", "vol", "tick_volume"],
-        }
-
-        for standard_name, aliases in column_aliases.items():
-
-            for alias in aliases:
-
-                if alias in lower_map:
-
-                    rename_map[lower_map[alias]] = standard_name
-
-                    break
-
-        data = data.rename(columns=rename_map)
-
-        required = ["open", "high", "low", "close"]
-
-        missing = [col for col in required if col not in data.columns]
-
-        if missing:
-
-            raise ValueError(
-
-                f"Missing required OHLC columns: {missing}. "
-
-                f"Available columns: {list(df.columns)}. "
-
-                "Expected columns like Open, High, Low, Close or open, high, low, close."
-
-            )
-
-        if "timestamp" in data.columns:
-
-            data["timestamp"] = pd.to_datetime(data["timestamp"])
-
-            data = data.sort_values("timestamp").reset_index(drop=True)
-
-        for col in ["open", "high", "low", "close"]:
-
-            data[col] = pd.to_numeric(data[col], errors="coerce")
-
-        if "volume" in data.columns:
-
-            data["volume"] = pd.to_numeric(data["volume"], errors="coerce")
-
-        return data
