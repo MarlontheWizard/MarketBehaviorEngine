@@ -149,20 +149,11 @@ class RangeFeatureExtractor:
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
 
         """
-
         Main feature extraction method.
 
         Inputs df: Normalized OHLC dataframe. In this case data from MarketNormalizationEngine.
 
         Returns pd.DataFrame: Original dataframe plus range-behavior features.
-
-        """
-
-        """
-        TODO: 
-        
-        Z Score = ((X - u) / sigma) where X is the most recent data point, u is the rolling average (mean) over the defined lookback window, and 
-        sigma is the rolling standard deviation over the same window.
         """
     
         data = data.copy()
@@ -203,9 +194,13 @@ class RangeFeatureExtractor:
     # ---------------------------------------------------------------------
 
     def _add_rolling_zscores(self, df: pd.DataFrame) -> pd.DataFrame:
+    
     """
     Adds rolling z-scores.
 
+    Z Score = ((X - u) / σ) where X is the most recent data point, u is the rolling average (mean) over the defined lookback window, and 
+    sigma is the rolling standard deviation over the same window.
+        
     The rolling mean/std are shifted by 1 so the current row is compared
     only against prior feature history. This avoids the current value 
     influencing its own normalization.
