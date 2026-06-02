@@ -129,3 +129,50 @@ class RangeFeatureExtractor:
             self.config.slope_window = slope_window
 
         self._validate_config()
+
+    
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+
+        """
+
+        Main feature extraction method.
+
+        Inputs df: Normalized OHLC dataframe. In this case data from MarketNormalizationEngine.
+
+        Returns pd.DataFrame: Original dataframe plus range-behavior features.
+
+        """
+
+        """
+        Z Score = ((X - u) / sigma) where X is the most recent data point, u is the rolling average (mean) over the defined lookback window, and 
+        sigma is the rolling standard deviation over the same window.
+        """
+        data = self._standardize_ohlc_columns(df)
+
+        data = data.copy()
+
+        self._validate_ohlc_data(data)
+
+        data = self._add_candle_features(data)
+
+        data = self._add_atr(data)
+
+        for window in self.config.windows:
+
+            data = self._add_range_geometry_features(data, window)
+
+            data = self._add_directional_efficiency_features(data, window)
+
+            data = self._add_boundary_touch_features(data, window)
+
+            data = self._add_rotation_features(data, window)
+
+            data = self._add_wick_rejection_features(data, window)
+
+            data = self._add_slope_flatness_features(data, window)
+
+            data = self._add_lifecycle_features(data, window)
+
+        data = self._add_multi_window_comparison_features(data)
+
+        return data
