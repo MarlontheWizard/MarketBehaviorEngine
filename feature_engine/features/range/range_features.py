@@ -123,6 +123,8 @@ class RangeFeatureExtractor:
         atr_window: Optional[int] = None,
         zone_pct: Optional[float] = None,
         slope_window: Optional[int] = None,
+        zscore_windows: Optional[Iterable[int]] = None,
+        zscore_clip: Optional[float] = None
     ) -> None:
 
         self.config = config or RangeFeatureConfig()
@@ -218,12 +220,7 @@ class RangeFeatureExtractor:
                 
                 min_periods = self._min_periods(z_window)
 
-                rolling_mean = (
-                    x.rolling(
-                        window=z_window,
-                        min_periods=min_periods,
-                    ).mean().shift(1)
-                )
+                rolling_mean = (x.rolling(window=z_window, min_periods=min_periods).mean().shift(1))
 
                 rolling_std = (x.rolling(window=z_window, min_periods=min_periods).std(ddof=0).shift(1))
 
