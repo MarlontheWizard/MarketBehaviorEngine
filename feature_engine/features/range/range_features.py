@@ -277,6 +277,61 @@ class RangeFeatureExtractor:
         
             raise ValueError("min_periods_ratio must be between 0.1 and 1.0.")
 
+
+    # ---------------------------------------------------------------------
+    #                          Slope Feature(s)
+    # ---------------------------------------------------------------------
+            
+    @staticmethod
+    def _theil_sen_slope(values: np.ndarray) -> float:
+        """
+        Robust slope estimator.
+
+        Uses the median of all pairwise slopes.
+        More resistant to outlier candles than ordinary least-squares slope that uses linear regression.
+
+        For rolling windows like 20, 50, 100 this is acceptable, but for very large
+        windows it can become expensive since it is O(n^2).
+
+        TODO: Upgrade to a multithreaded implementation.
+        """
+
+        values = np.asarray(values, dtype=float)
+
+        if len(values) < 2:
+            
+            return np.nan
+
+        
+        if np.isnan(values).any():
+            
+            return np.nan
+
+        
+        slopes = []
+
+        for i in range(len(values) - 1):
+            
+            for j in range(i + 1, len(values)):
+                
+                denominator = j - i
+
+                if denominator == 0:
+                    
+                    continue
+
+                slopes.append((values[j] - values[i]) / denominator)
+
+        
+        if not slopes:
+            
+            return np.nan
+
+        
+        return float(np.median(slopes))
+
+        
+
     # ---------------------------------------------------------------------
     #                          Helper Functions
     # ---------------------------------------------------------------------
