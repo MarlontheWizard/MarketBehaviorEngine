@@ -236,5 +236,47 @@ class RangeFeatureExtractor:
 
 
     # ---------------------------------------------------------------------
+    #                            Validation
+    # ---------------------------------------------------------------------
+
+    def _validate_config(self) -> None:
+        
+        if not self.config.windows:
+            
+            raise ValueError("windows cannot be empty.")
+
+        if any(window <= 1 for window in self.config.windows):
+            
+            raise ValueError("All windows must be greater than 1.")
+
+        if self.config.atr_window <= 1:
+            
+            raise ValueError("atr_window must be greater than 1.")
+
+        if not 0.01 <= self.config.zone_pct <= 0.45:
+            
+            raise ValueError("zone_pct should usually be between 0.01 and 0.45.")
+
+        if self.config.slope_window <= 1:
+            
+            raise ValueError("slope_window must be greater than 1.")
+
+        if not self.config.zscore_windows:
+            
+            raise ValueError("zscore_windows cannot be empty.")
+
+        if any(window <= 2 for window in self.config.zscore_windows):
+            
+            raise ValueError("All zscore_windows must be greater than 2.")
+
+        if self.config.zscore_clip <= 0:
+            
+            raise ValueError("zscore_clip must be positive.")
+
+        if not 0.1 <= self.config.min_periods_ratio <= 1.0:
+        
+            raise ValueError("min_periods_ratio must be between 0.1 and 1.0.")
+
+    # ---------------------------------------------------------------------
     #                          Helper Functions
     # ---------------------------------------------------------------------
