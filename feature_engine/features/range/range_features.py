@@ -58,6 +58,8 @@ class RangeFeatureConfig:
     windows: tuple[int, ...] = (20, 50, 100)
     
     atr_window: int = 14
+
+    atr_method: str = "wilder"
     
     zone_pct: float = 0.15
     
@@ -121,12 +123,13 @@ class RangeFeatureExtractor:
         *,
         windows: Optional[Iterable[int]] = None,
         atr_window: Optional[int] = None,
+        atr_method: Optional[int] = None,
         zone_pct: Optional[float] = None,
         slope_window: Optional[int] = None,
         zscore_windows: Optional[Iterable[int]] = None,
-        zscore_clip: Optional[float] = None
-    ) -> None:
+        zscore_clip: Optional[float] = None) -> None:
 
+        
         self.config = config or RangeFeatureConfig()
 
         if windows is not None:
@@ -147,6 +150,7 @@ class RangeFeatureExtractor:
 
         self._validate_config()
 
+        
     
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
 
@@ -190,6 +194,7 @@ class RangeFeatureExtractor:
         
         return data
 
+    
 
     # ---------------------------------------------------------------------
     #                          Rolling Z-SCORE
@@ -277,6 +282,10 @@ class RangeFeatureExtractor:
         
             raise ValueError("min_periods_ratio must be between 0.1 and 1.0.")
 
+        if self.config.atr_method not in {"wilder"}:
+
+            raise ValueError("atr_method must be 'wilder'.")
+
 
     # ---------------------------------------------------------------------
     #                          Slope Feature(s)
@@ -330,6 +339,7 @@ class RangeFeatureExtractor:
         
         return float(np.median(slopes))
 
+    
 
     def _add_slope_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
         
@@ -367,7 +377,7 @@ class RangeFeatureExtractor:
 
         
         # ------------------------------------------------------------------
-        #                  Ordinary least-squares slope
+        # Ordinary least-squares slope
         # ------------------------------------------------------------------
 
         slope_col = f"close_slope_{window}"
@@ -384,9 +394,9 @@ class RangeFeatureExtractor:
 
         df[f"abs_trendline_move_atr_{window}"] = (df[f"trendline_move_atr_{window}"].abs())
 
-        
+
         # ------------------------------------------------------------------
-        #                    Robust Theil-Sen slope
+        # Theil-Sen slope
         # ------------------------------------------------------------------
 
         robust_slope_col = f"robust_close_slope_{window}"
@@ -404,7 +414,7 @@ class RangeFeatureExtractor:
         df[f"abs_robust_trendline_move_atr_{window}"] = (df[f"robust_trendline_move_atr_{window}"].abs())
 
         # ------------------------------------------------------------------
-        #                       Flatness score
+        # Flatness score
         # ------------------------------------------------------------------
           """
           Main flatness uses robust slope because it is less distorted by
@@ -417,7 +427,7 @@ class RangeFeatureExtractor:
         df[f"flatness_score_{window}"] = (1.0 / (1.0 + df[f"abs_robust_trendline_move_atr_{window}"])).clip(lower=0.0, upper=1.0)
 
         # ------------------------------------------------------------------
-        #                      Outlier sensitivity
+        # Outlier sensitivity
         # ------------------------------------------------------------------
           """
           If OLS and robust slope disagree a lot, the window may contain an
@@ -430,6 +440,44 @@ class RangeFeatureExtractor:
         return df
 
 
+
     # ---------------------------------------------------------------------
-    #                          Helper Functions
+    #                                  ATR
+    # ---------------------------------------------------------------------
+    def _add_atr(self, df: pd.DataFrame) -> pd.DataFrame:
+
+        """
+        Adds True Range and Wilder ATR.
+
+        True Range: max( high - low, abs(high - previous_close), abs(low - previous_close))
+
+        Wilder ATR: Uses exponential smoothing with alpha = 1 / atr_window.
+
+        Why wilder? ATR is used as a normalization denominator for range features. So wilder smoothing is less jumpy
+        than a simple rolling mean, which helps keep features like range_width_atr_N and trendline_move_atr_N more stable.
+
+        """
+
+        c = self.config
+
+        atr_col = f"atr_{c.atr_window}"
+
+        prev_close = df["close"].shift(1)
+
+        true_range_components = pd.concat( [df["high"] - df["low"], (df["high"] - prev_close).abs(), (df["low"] - prev_close).abs()], axis=1)
+
+        
+        df["true_range"] = true_range_components.max(axis=1)
+
+        
+        df[atr_col] = (df["true_range"].ewm(alpha=1.0 / c.atr_window,
+                                            adjust=False,
+                                            min_periods=self._min_periods(c.atr_window)).mean())
+
+        
+        return df
+
+
+    # ---------------------------------------------------------------------
+    #                            Helper Functions
     # ---------------------------------------------------------------------
