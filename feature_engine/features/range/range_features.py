@@ -478,6 +478,43 @@ class RangeFeatureExtractor:
         return df
 
 
+
+    # ---------------------------------------------------------------------
+    #                           Window Comaparison
+    # ---------------------------------------------------------------------
+    def _safe_ratio(self, df: pd.DataFrame, numerator: str,  denominator: str, output: str, *, clip: float | None = 10.0) -> None:
+
+        """
+        Adds a safe ratio feature.
+
+        Why? Raw ratios can explode when the denominator is ~ zero so I want to avoid creating misleading outliers.
+        Try range_width_atr_20 / range_width_atr_50 as an example to understand this more.
+        """
+
+        if numerator not in df.columns or denominator not in df.columns:
+
+            df[output] = np.nan
+
+            return
+
+
+        dividend = df[numerator].astype(float)
+
+        divisor = df[denominator].astype(float)
+
+        safe_divisor = divisor.where(divisor.abs() > self.config.eps, np.nan)
+
+        ratio = dividend / safe_divisor
+
+
+        if clip is not None:
+
+            ratio = ratio.clip(lower=-clip, upper=clip)
+
+
+        df[output] = ratio
+
+
     # ---------------------------------------------------------------------
     #                            Helper Functions
     # ---------------------------------------------------------------------
