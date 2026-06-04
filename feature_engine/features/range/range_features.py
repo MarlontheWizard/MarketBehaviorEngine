@@ -482,6 +482,7 @@ class RangeFeatureExtractor:
     # ---------------------------------------------------------------------
     #                           Window Comaparison
     # ---------------------------------------------------------------------
+    
     def _safe_ratio(self, df: pd.DataFrame, numerator: str,  denominator: str, output: str, *, clip: float | None = 10.0) -> None:
 
         """
@@ -574,6 +575,60 @@ class RangeFeatureExtractor:
 
         return df
 
+
+
+
+    def _add_range_behavior_candidates(self, df: pd.DataFrame) -> pd.DataFrame:
+
+        """
+        Creates a soft range-behavior candidate score for each configured window. This is NOT the final model probability.
+        This is a rule based descriptive feature that helps summarize whether each window currently behaves like a range.
+
+        High values mean low directional efficiency, flatness, decent midpoint rotation, two-sided boundary interaction or
+        repeated boundary activity.
+
+        This score helps the model because it compresses several useful range traits into one interpretable signal.
+
+        Each signal gets weighted because not all signals are equally important.
+        
+        For example... inefficiency and flatness are strongest for range-vs-trend separation. Rotation and two sided touches 
+        confirm balanced/ranging behavior. Also boundary activity helps, but should not dominate.
+        """
+
+        for window in sorted(self.config.windows):
+
+            required_cols = [f"directional_efficiency_{window}",
+                             f"flatness_score_{window}",
+                             f"rotation_score_{window}",
+                             f"two_sided_touch_score_{window}",
+                             f"boundary_activity_score_{window}"]
+
+            missing = [col for col in required_cols if col not in df.columns]
+
+            candidate_col = f"range_behavior_candidate_{window}"
+
+            if missing:
+
+                df[candidate_col] = np.nan
+
+                continue
+
+            inefficiency = 1.0 - df[f"directional_efficiency_{window}"].clip(0.0, 1.0)
+
+            flatness = df[f"flatness_score_{window}"].clip(0.0, 1.0)
+
+            rotation = df[f"rotation_score_{window}"].clip(0.0, 1.0)
+
+            two_sided = df[f"two_sided_touch_score_{window}"].clip(0.0, 1.0)
+
+            boundary_activity = df[f"boundary_activity_score_{window}"].clip(0.0, 1.0)
+
+
+
+        df[candidate_col] = (0.30 * inefficiency + 0.25 * flatness + 0.20 * rotation + 0.15 * two_sided + 0.10 * boundary_activity).clip(0.0, 1.0)
+
+        
+        return df
 
 
 
