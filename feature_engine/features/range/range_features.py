@@ -514,6 +514,8 @@ class RangeFeatureExtractor:
 
         df[output] = ratio
 
+
+
     def _safe_diff(self, df: pd.DataFrame, left: str, right: str, output: str) -> None:
 
         """
@@ -528,6 +530,51 @@ class RangeFeatureExtractor:
 
 
         df[output] = df[left].astype(float) - df[right].astype(float)
+
+
+
+    def _add_atr_context_features(self, df: pd.DataFrame) -> pd.DataFrame:
+
+        """
+        Adds ATR compression/expansion context features.
+        
+        atr_compression_ratio_N: current ATR / prior rolling mean ATR over N candles
+
+        If < 1.0 = ATR, it is below recent average -> compression-like
+
+        If > 1.0 = ATR it is above recent average -> expansion-like
+
+        Using shift(1) avoids the current row influencing its own context.
+        """
+
+        atr_col = f"atr_{self.config.atr_window}"
+
+
+        if atr_col not in df.columns:
+
+            raise ValueError(f"Missing ATR column: {atr_col}. " "Call _add_atr() before _add_atr_context_features().")
+
+        
+        for window in sorted(self.config.windows):
+
+            atr_mean_col = f"atr_mean_{window}"
+
+            ratio_col = f"atr_compression_ratio_{window}"
+
+            df[atr_mean_col] = (df[atr_col].rolling( window=window, min_periods=self._min_periods(window))
+                                                                                                          .mean()
+                                                                                                          .shift(1))
+
+            safe_mean = df[atr_mean_col].where( df[atr_mean_col].abs() > self.config.eps, np.nan)
+
+            
+            df[ratio_col] = (df[atr_col] / safe_mean).clip(lower=0.0, upper=10.0)
+
+        
+
+        return df
+
+
 
 
 
