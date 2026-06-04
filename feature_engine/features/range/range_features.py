@@ -330,7 +330,105 @@ class RangeFeatureExtractor:
         
         return float(np.median(slopes))
 
+
+    def _add_slope_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
         
+        """
+        Adds slope/flatness features for a rolling close window.
+
+        Why? It describes whether the current window is flat/balanced or tilted/directional.
+
+        Why both slopes? OLS slope reacts strongly to outlier closes. Theil-Sen slope is more resistant to outlier candles.
+        The difference between them can describe outlier sensitivity.
+
+        Features created for each window:
+            
+            close_slope_N
+            close_slope_atr_N
+            abs_close_slope_atr_N
+
+            trendline_move_atr_N
+            abs_trendline_move_atr_N
+
+            robust_close_slope_N
+            robust_close_slope_atr_N
+            abs_robust_close_slope_atr_N
+
+            robust_trendline_move_atr_N
+            abs_robust_trendline_move_atr_N
+
+            flatness_score_N
+            slope_outlier_sensitivity_N
+        """
+
+        c = self.config
+        min_periods = self._min_periods(window)
+        atr_col = f"atr_{c.atr_window}"
+
+        
+        # ------------------------------------------------------------------
+        #                  Ordinary least-squares slope
+        # ------------------------------------------------------------------
+
+        slope_col = f"close_slope_{window}"
+
+        df[slope_col] = (df["close"].rolling(window=window, min_periods=min_periods).apply(self._linear_regression_slope, raw=True))
+
+        #Per-candle OLS slope normalized by ATR
+        df[f"close_slope_atr_{window}"] = (df[slope_col] / (df[atr_col] + c.eps))
+
+        df[f"abs_close_slope_atr_{window}"] = (df[f"close_slope_atr_{window}"].abs())
+
+        #Total fitted OLS movement across the whole window, normalized by ATR
+        df[f"trendline_move_atr_{window}"] = ((df[slope_col] * (window - 1)) / (df[atr_col] + c.eps))
+
+        df[f"abs_trendline_move_atr_{window}"] = (df[f"trendline_move_atr_{window}"].abs())
+
+        
+        # ------------------------------------------------------------------
+        #                    Robust Theil-Sen slope
+        # ------------------------------------------------------------------
+
+        robust_slope_col = f"robust_close_slope_{window}"
+
+        df[robust_slope_col] = (df["close"].rolling(window=window, min_periods=min_periods).apply(self._theil_sen_slope, raw=True))
+
+        # Per-candle robust slope normalized by ATR.
+        df[f"robust_close_slope_atr_{window}"] = (df[robust_slope_col] / (df[atr_col] + c.eps))
+
+        df[f"abs_robust_close_slope_atr_{window}"] = (df[f"robust_close_slope_atr_{window}"].abs())
+
+        # Total fitted robust movement across the whole window, normalized by ATR.
+        df[f"robust_trendline_move_atr_{window}"] = ((df[robust_slope_col] * (window - 1)) / (df[atr_col] + c.eps))
+
+        df[f"abs_robust_trendline_move_atr_{window}"] = (df[f"robust_trendline_move_atr_{window}"].abs())
+
+        # ------------------------------------------------------------------
+        #                       Flatness score
+        # ------------------------------------------------------------------
+          """
+          Main flatness uses robust slope because it is less distorted by
+          one-candle outliers or abnormal closes.
+        
+          flatness_score close to 1 = flatter / more range-like
+          flatness_score close to 0 = more tilted / more directional
+          """
+
+        df[f"flatness_score_{window}"] = (1.0 / (1.0 + df[f"abs_robust_trendline_move_atr_{window}"])).clip(lower=0.0, upper=1.0)
+
+        # ------------------------------------------------------------------
+        #                      Outlier sensitivity
+        # ------------------------------------------------------------------
+          """
+          If OLS and robust slope disagree a lot, the window may contain an
+          outlier close, sweep, spike, or abnormal displacement.
+          """
+
+        df[f"slope_outlier_sensitivity_{window}"] = (df[f"abs_trendline_move_atr_{window}"] - df[f"abs_robust_trendline_move_atr_{window}"]).abs()
+
+
+        return df
+
 
     # ---------------------------------------------------------------------
     #                          Helper Functions
