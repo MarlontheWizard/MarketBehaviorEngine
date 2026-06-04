@@ -514,6 +514,22 @@ class RangeFeatureExtractor:
 
         df[output] = ratio
 
+    def _safe_diff(self, df: pd.DataFrame, left: str, right: str, output: str) -> None:
+
+        """
+        Adds a difference feature.
+        """
+
+        if left not in df.columns or right not in df.columns:
+
+            df[output] = np.nan
+
+            return
+
+
+        df[output] = df[left].astype(float) - df[right].astype(float)
+
+
 
     # ---------------------------------------------------------------------
     #                            Helper Functions
