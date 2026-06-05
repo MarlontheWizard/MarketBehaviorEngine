@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, Dict, List
+from typing import Iterable, Optional
 
 import numpy as np
 import pandas as pd
@@ -104,15 +104,13 @@ class RangeFeatureExtractor:
 
         7. Midpoint rotation
 
-        8. Wick rejection near boundaries
+        8. Slope / flatness
 
-        9. Slope / flatness
+        9. Volatility compression
 
-        10. Volatility compression
+        10. Lifecycle/change features
 
-        11. Lifecycle/change features
-
-        12. Multi-window comparison features
+        11. Multi-window comparison features
     """
 
     def __init__(
@@ -121,7 +119,7 @@ class RangeFeatureExtractor:
         *,
         windows: Optional[Iterable[int]] = None,
         atr_window: Optional[int] = None,
-        atr_method: Optional[int] = None,
+        atr_method: Optional[str] = None,
         zone_pct: Optional[float] = None,
         slope_window: Optional[int] = None,
         zscore_windows: Optional[Iterable[int]] = None,
@@ -138,6 +136,10 @@ class RangeFeatureExtractor:
 
             self.config.atr_window = atr_window
 
+        if atr_method is not None:
+
+            self.config.atr_method = atr_method
+
         if zone_pct is not None:
 
             self.config.zone_pct = zone_pct
@@ -148,7 +150,7 @@ class RangeFeatureExtractor:
 
         if zscore_windows is not None:
 
-        self.config.zscore_windows = tuple(zscore_windows)
+            self.config.zscore_windows = tuple(zscore_windows)
 
         if zscore_clip is not None:
     
@@ -214,54 +216,54 @@ class RangeFeatureExtractor:
 
     def _zscore_feature_columns(self, df: pd.DataFrame) -> list[str]:
 
-    """
-    Selects behavior features that benefit from rolling z-score.
-    Avoids raw prices, timestamps, boolean zone flags, and already-zscored columns.
-    """
-
-    include_keywords = ["range_width_atr_",
-                        "directional_efficiency_",
-                        "mid_cross_frequency_",
-                        "rotation_score_",
-                        "touch_balance_",
-                        "two_sided_touch_score_",
-                        "boundary_activity_score_",
-                        "abs_robust_trendline_move_atr_",
-                        "flatness_score_",
-                        "atr_compression_ratio_",
-                        "one_sided_position_pressure_",
-                        "range_behavior_candidate_",
-                        "range_agreement_",
-                        "range_component_agreement_",
-                        "range_candidate_agreement_",
-                        "slope_outlier_sensitivity_"]
-
-    exclude_keywords = ["_z",
-                        "range_high_",
-                        "range_low_",
-                        "range_mid_",
-                        "upper_zone_start_",
-                        "lower_zone_end_",
-                        "near_upper_zone_",
-                        "near_lower_zone_",
-                        "timestamp"]
-
+        """
+        Selects behavior features that benefit from rolling z-score.
+        Avoids raw prices, timestamps, boolean zone flags, and already-zscored columns.
+        """
     
-    selected = []
-
-    for col in df.columns:
-
-        if any(excluded in col for excluded in exclude_keywords):
-
-            continue
-
+        include_keywords = ["range_width_atr_",
+                            "directional_efficiency_",
+                            "mid_cross_frequency_",
+                            "rotation_score_",
+                            "touch_balance_",
+                            "two_sided_touch_score_",
+                            "boundary_activity_score_",
+                            "abs_robust_trendline_move_atr_",
+                            "flatness_score_",
+                            "atr_compression_ratio_",
+                            "one_sided_position_pressure_",
+                            "range_behavior_candidate_",
+                            "range_agreement_",
+                            "range_component_agreement_",
+                            "range_candidate_agreement_",
+                            "slope_outlier_sensitivity_"]
+    
+        exclude_keywords = ["_z",
+                            "range_high_",
+                            "range_low_",
+                            "range_mid_",
+                            "upper_zone_start_",
+                            "lower_zone_end_",
+                            "near_upper_zone_",
+                            "near_lower_zone_",
+                            "timestamp"]
+    
         
-        if any(included in col for included in include_keywords):
-
-            selected.append(col)
-
+        selected = []
     
-    return selected
+        for col in df.columns:
+    
+            if any(excluded in col for excluded in exclude_keywords):
+    
+                continue
+    
+            
+            if any(included in col for included in include_keywords):
+    
+                selected.append(col)
+    
+        
+        return selected
 
 
     
@@ -404,8 +406,9 @@ class RangeFeatureExtractor:
         
         return float(np.median(slopes))
 
-    
 
+    
+    @staticmethod
     def _linear_regression_slope(values: np.ndarray) -> float:
 
         values = np.asarray(values, dtype=float)
@@ -651,14 +654,14 @@ class RangeFeatureExtractor:
 
         mid_col = f"range_mid_{window}"
         width_col = f"range_width_{window}"
-        above_mid = df["close"] > df[mid_col]
+
+        #avoid counting the transition from invalid to valid midpoint as a real midpoint cross
+        above_mid = (df["close"] > df[mid_col]).where(df[mid_col].notna(), np.nan)
 
         mid_cross = (above_mid != above_mid.shift(1)).astype(float)
 
-        #avoid counting invalid early rows where midpoint is unavailable.
-
-        mid_cross = mid_cross.where(df[mid_col].notna(), np.nan)
-
+        mid_cross = mid_cross.where(above_mid.notna() & above_mid.shift(1).notna(), np.nan)
+        
         df[f"mid_cross_count_{window}"] = (mid_cross.rolling(window, min_periods=min_periods).sum())
 
         df[f"mid_cross_frequency_{window}"] = df[f"mid_cross_count_{window}"] / window
