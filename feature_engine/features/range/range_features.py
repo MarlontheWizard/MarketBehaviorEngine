@@ -864,6 +864,7 @@ class RangeFeatureExtractor:
 
                 continue
 
+            
             inefficiency = 1.0 - df[f"directional_efficiency_{window}"].clip(0.0, 1.0)
 
             flatness = df[f"flatness_score_{window}"].clip(0.0, 1.0)
@@ -876,7 +877,8 @@ class RangeFeatureExtractor:
 
 
 
-        df[candidate_col] = (0.30 * inefficiency + 0.25 * flatness + 0.20 * rotation + 0.15 * two_sided + 0.10 * boundary_activity).clip(0.0, 1.0)
+            df[candidate_col] = (0.30 * inefficiency + 0.25 * flatness + 0.20 * rotation + 0.15 * two_sided + 0.10 * boundary_activity).clip(0.0,
+                                                                                                                                             1.0)
 
         
         return df
