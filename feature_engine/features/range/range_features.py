@@ -427,13 +427,13 @@ class RangeFeatureExtractor:
         # ------------------------------------------------------------------
         # Flatness score
         # ------------------------------------------------------------------
-          """
-          Main flatness uses robust slope because it is less distorted by
-          one-candle outliers or abnormal closes.
-        
-          flatness_score close to 1 = flatter / more range-like
-          flatness_score close to 0 = more tilted / more directional
-          """
+        """
+        Main flatness uses robust slope because it is less distorted by
+        one-candle outliers or abnormal closes.
+    
+        flatness_score close to 1 = flatter / more range-like
+        flatness_score close to 0 = more tilted / more directional
+        """
 
         df[f"flatness_score_{window}"] = (1.0 / (1.0 + df[f"abs_robust_trendline_move_atr_{window}"])).clip(lower=0.0, upper=1.0)
 
