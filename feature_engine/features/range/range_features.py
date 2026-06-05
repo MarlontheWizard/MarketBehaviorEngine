@@ -185,7 +185,7 @@ class RangeFeatureExtractor:
             
             data = self._add_rotation_features(data, window)
             
-            data = self._add_slope_flatness_features(data, window)
+            data = self._add_slope_features(data, window)
             
             data = self._add_lifecycle_features(data, window)
 
