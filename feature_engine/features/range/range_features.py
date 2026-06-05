@@ -160,35 +160,40 @@ class RangeFeatureExtractor:
         Returns pd.DataFrame: Original dataframe plus range-behavior features.
         """
     
-        data = data.copy()
-
+        data = df.copy()
+    
+        self._validate_input_schema(data)
         self._validate_ohlc_data(data)
-
-        data = self._add_candle_features(data)
-
+    
         data = self._add_atr(data)
-
+    
         for window in self.config.windows:
-
+            
             data = self._add_range_geometry_features(data, window)
-
+            
             data = self._add_directional_efficiency_features(data, window)
-
+            
             data = self._add_boundary_touch_features(data, window)
-
+            
             data = self._add_rotation_features(data, window)
-
-            data = self._add_wick_rejection_features(data, window)
-
+            
             data = self._add_slope_flatness_features(data, window)
-
+            
             data = self._add_lifecycle_features(data, window)
 
+        '''
+        ATR context should happen before multi-window comparison because
+        multi-window comparison uses atr_compression_ratio_N.
+        '''
         
+        data = self._add_atr_context_features(data)
+    
+        #multi window comparison creates range candidates and cross-window agreement
         data = self._add_multi_window_comparison_features(data)
 
-        #Now that base features are added we can calculate rolling z-score for each one
+        #all features ready, add rolling z scores
         data = self._add_rolling_zscores(data)
+
         
         return data
 
