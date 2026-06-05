@@ -483,6 +483,246 @@ class RangeFeatureExtractor:
 
 
     # ---------------------------------------------------------------------
+    #                               Geometry
+    # ---------------------------------------------------------------------
+    
+    def _add_range_geometry_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+
+        c = self.config
+
+        min_periods = self._min_periods(window)
+
+        atr_col = f"atr_{c.atr_window}"
+        high_col = f"range_high_{window}"
+        low_col = f"range_low_{window}"
+        mid_col = f"range_mid_{window}"
+        width_col = f"range_width_{window}"
+
+
+        df[high_col] = df["high"].rolling(window, min_periods=min_periods).max()
+
+        df[low_col] = df["low"].rolling(window, min_periods=min_periods).min()
+
+        df[mid_col] = (df[high_col] + df[low_col]) / 2.0
+
+        df[width_col] = df[high_col] - df[low_col]
+
+        df[f"range_width_atr_{window}"] = df[width_col] / (df[atr_col] + c.eps)
+
+        df[f"upper_zone_start_{window}"] = df[high_col] - (df[width_col] * c.zone_pct)
+
+        df[f"lower_zone_end_{window}"] = df[low_col] + (df[width_col] * c.zone_pct)
+
+        df[f"position_in_range_{window}"] = ((df["close"] - df[low_col]) / (df[width_col] + c.eps)).clip(lower=0.0, upper=1.0)
+
+        df[f"distance_to_range_high_{window}"] = df[high_col] - df["close"]
+
+        df[f"distance_to_range_low_{window}"] = df["close"] - df[low_col]
+
+        df[f"distance_to_range_high_atr_{window}"] = (df[f"distance_to_range_high_{window}"] / (df[atr_col] + c.eps))
+
+        df[f"distance_to_range_low_atr_{window}"] = (df[f"distance_to_range_low_{window}"] / (df[atr_col] + c.eps))
+
+        df[f"current_distance_from_mid_{window}"] = ((df["close"] - df[mid_col]).abs() / (df[width_col] + c.eps))
+
+
+        return df
+
+
+    # ---------------------------------------------------------------------
+    #                              Directional
+    # ---------------------------------------------------------------------
+    def _add_directional_efficiency_features(self,df: pd.DataFrame, window: int) -> pd.DataFrame:
+
+        c = self.config
+
+        min_periods = self._min_periods(window)
+
+        net_change = (df["close"] - df["close"].shift(window - 1)).abs()
+
+        total_movement = (df["close"].diff().abs().rolling(window, min_periods=min_periods).sum())
+
+        df[f"directional_efficiency_{window}"] = net_change / (total_movement + c.eps)
+
+        return df
+
+
+    # ---------------------------------------------------------------------
+    #                              Rotational
+    # ---------------------------------------------------------------------
+
+    def _add_rotation_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+
+        c = self.config
+
+        min_periods = self._min_periods(window)
+
+        mid_col = f"range_mid_{window}"
+        width_col = f"range_width_{window}"
+        above_mid = df["close"] > df[mid_col]
+
+        mid_cross = (above_mid != above_mid.shift(1)).astype(float)
+
+        #avoid counting invalid early rows where midpoint is unavailable.
+
+        mid_cross = mid_cross.where(df[mid_col].notna(), np.nan)
+
+        df[f"mid_cross_count_{window}"] = (mid_cross.rolling(window, min_periods=min_periods).sum())
+
+        df[f"mid_cross_frequency_{window}"] = df[f"mid_cross_count_{window}"] / window
+
+        df[f"avg_distance_from_mid_{window}"] = (((df["close"] - df[mid_col]).abs() / (df[width_col] + c.eps)).rolling(window,
+                                                                                                                       min_periods=min_periods)
+                                                                                                                       .mean())
+        '''
+        Current rotational score:
+        ->more midpoint crossing helps
+        ->lower average distance from midpoint helps
+        '''
+        
+        df[f"rotation_score_{window}"] = (df[f"mid_cross_frequency_{window}"] * (1.0 - df[f"avg_distance_from_mid_{window}"].clip(0.0, 1.0))
+                                         ).clip(lower=0.0, upper=1.0)
+
+
+        
+        return df
+
+
+
+    # ---------------------------------------------------------------------
+    #                              Lifecycle
+    # ---------------------------------------------------------------------
+    def _add_lifecycle_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+
+        """
+        Adds current-change style features. 
+        These help describe lifecycle:
+
+            - forming
+            - stabilizing
+            - compressing
+            - expanding
+            - weakening
+            - transitioning
+        """
+
+        sw = self.config.slope_window
+
+        c = self.config
+
+        
+        lifecycle_base_cols = [f"range_width_atr_{window}",
+                               f"directional_efficiency_{window}",
+                               f"touch_balance_{window}",
+                               f"mid_cross_frequency_{window}",
+                               f"boundary_activity_score_{window}",
+                               f"two_sided_touch_score_{window}",
+                               f"rotation_score_{window}",
+                               f"flatness_score_{window}",
+                               f"position_in_range_{window}"]
+
+
+        
+        for col in lifecycle_base_cols:
+
+            if col not in df.columns:
+
+                continue
+
+            
+            df[f"{col}_change_{sw}"] = df[col] - df[col].shift(sw)
+
+            df[f"{col}_slope_{sw}"] = (df[col].rolling(sw, min_periods=max(2, int(sw * 0.8))).apply(self._linear_regression_slope, raw=True))
+
+        
+        #range-width state candidates which are just numeric descriptors, not final classification labels
+
+        width_col = f"range_width_atr_{window}"
+
+        width_slope_col = f"{width_col}_slope_{sw}"
+
+        df[f"range_expansion_pressure_{window}"] = (df[width_slope_col].clip(lower=0.0))
+
+        df[f"range_compression_pressure_{window}"] = (( -df[width_slope_col]).clip(lower=0.0))
+
+        
+        #directional pressure rising while range features weaken can indicate transition
+        de_slope_col = f"directional_efficiency_{window}_slope_{sw}"
+
+        df[f"directional_pressure_change_{window}"] = df[de_slope_col]
+
+        #position persistence near upper/lower area.
+
+        pos_col = f"position_in_range_{window}"
+
+        df[f"time_near_upper_{window}"] = ((df[pos_col] >= 1.0 - c.zone_pct).astype(float).rolling(window, min_periods=self._min_periods(window))
+                                          .mean())
+
+
+        
+        df[f"time_near_lower_{window}"] = ((df[pos_col] <= c.zone_pct).astype(float).rolling(window, min_periods=self._min_periods(window))
+                                          .mean())
+
+        
+        df[f"one_sided_position_pressure_{window}"] = (pd.concat([df[f"time_near_upper_{window}"], df[f"time_near_lower_{window}"]],axis=1
+                                                                ).max(axis=1))
+
+
+        
+        return df
+
+        
+    # ---------------------------------------------------------------------
+    #                              Boundaries
+    # ---------------------------------------------------------------------
+    def _add_boundary_touch_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+
+        c = self.config
+
+        min_periods = self._min_periods(window)
+
+        upper_zone_col = f"upper_zone_start_{window}"
+        lower_zone_col = f"lower_zone_end_{window}"
+        near_upper_col = f"near_upper_zone_{window}"
+        near_lower_col = f"near_lower_zone_{window}"
+
+
+        df[near_upper_col] = (df["high"] >= df[upper_zone_col]).astype(float)
+
+        df[near_lower_col] = (df["low"] <= df[lower_zone_col]).astype(float)
+
+        upper_touch_col = f"upper_touch_count_{window}"
+
+        lower_touch_col = f"lower_touch_count_{window}"
+
+        df[upper_touch_col] = (df[near_upper_col].rolling(window, min_periods=min_periods).sum())
+
+
+        df[lower_touch_col] = (df[near_lower_col].rolling(window, min_periods=min_periods).sum())
+
+        df[f"upper_touch_frequency_{window}"] = df[upper_touch_col] / window
+        df[f"lower_touch_frequency_{window}"] = df[lower_touch_col] / window
+        
+        df[f"total_touch_count_{window}"] = (df[upper_touch_col] + df[lower_touch_col])
+
+        df[f"boundary_activity_score_{window}"] = (df[f"total_touch_count_{window}"] / (2.0 * window)).clip(lower=0.0, upper=1.0)
+
+        max_touches = pd.concat([df[upper_touch_col], df[lower_touch_col]],axis=1).max(axis=1)
+
+        min_touches = pd.concat([df[upper_touch_col], df[lower_touch_col]], axis=1).min(axis=1)
+
+        df[f"touch_balance_{window}"] = min_touches / (max_touches + c.eps)
+
+        df[f"two_sided_touch_score_{window}"] = (df[f"touch_balance_{window}"] * df[f"boundary_activity_score_{window}"]).clip(lower=0.0,
+                                                                                                                               upper=1.0)
+
+
+        return df
+
+
+
+
+    # ---------------------------------------------------------------------
     #                           Window Comaparison
     # ---------------------------------------------------------------------
     
