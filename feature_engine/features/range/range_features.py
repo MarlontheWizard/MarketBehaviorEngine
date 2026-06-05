@@ -146,6 +146,14 @@ class RangeFeatureExtractor:
 
             self.config.slope_window = slope_window
 
+        if zscore_windows is not None:
+
+        self.config.zscore_windows = tuple(zscore_windows)
+
+        if zscore_clip is not None:
+    
+            self.config.zscore_clip = zscore_clip
+
         self._validate_config()
 
         
