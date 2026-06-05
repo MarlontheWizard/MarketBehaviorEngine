@@ -211,6 +211,60 @@ class RangeFeatureExtractor:
     #                          Rolling Z-SCORE
     # ---------------------------------------------------------------------
 
+
+    def _zscore_feature_columns(self, df: pd.DataFrame) -> list[str]:
+
+    """
+    Selects behavior features that benefit from rolling z-score.
+    Avoids raw prices, timestamps, boolean zone flags, and already-zscored columns.
+    """
+
+    include_keywords = ["range_width_atr_",
+                        "directional_efficiency_",
+                        "mid_cross_frequency_",
+                        "rotation_score_",
+                        "touch_balance_",
+                        "two_sided_touch_score_",
+                        "boundary_activity_score_",
+                        "abs_robust_trendline_move_atr_",
+                        "flatness_score_",
+                        "atr_compression_ratio_",
+                        "one_sided_position_pressure_",
+                        "range_behavior_candidate_",
+                        "range_agreement_",
+                        "range_component_agreement_",
+                        "range_candidate_agreement_",
+                        "slope_outlier_sensitivity_"]
+
+    exclude_keywords = ["_z",
+                        "range_high_",
+                        "range_low_",
+                        "range_mid_",
+                        "upper_zone_start_",
+                        "lower_zone_end_",
+                        "near_upper_zone_",
+                        "near_lower_zone_",
+                        "timestamp"]
+
+    
+    selected = []
+
+    for col in df.columns:
+
+        if any(excluded in col for excluded in exclude_keywords):
+
+            continue
+
+        
+        if any(included in col for included in include_keywords):
+
+            selected.append(col)
+
+    
+    return selected
+
+
+    
     def _add_rolling_zscores(self, df: pd.DataFrame) -> pd.DataFrame:
     
         """
@@ -352,7 +406,34 @@ class RangeFeatureExtractor:
 
     
 
+    def _linear_regression_slope(values: np.ndarray) -> float:
+
+        values = np.asarray(values, dtype=float)
     
+        if len(values) < 2:
+    
+            return np.nan
+    
+        if np.isnan(values).any():
+    
+            return np.nan
+    
+        x = np.arange(len(values), dtype=float)
+    
+        x_mean = x.mean()
+    
+        y_mean = values.mean()
+    
+        denominator = np.sum((x - x_mean) ** 2)
+    
+        if denominator == 0:
+    
+            return 0.0
+    
+        numerator = np.sum((x - x_mean) * (values - y_mean))
+    
+        return float(numerator / denominator)
+
     
 
     def _add_slope_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
