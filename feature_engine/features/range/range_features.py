@@ -440,10 +440,10 @@ class RangeFeatureExtractor:
         # ------------------------------------------------------------------
         # Outlier sensitivity
         # ------------------------------------------------------------------
-          """
-          If OLS and robust slope disagree a lot, the window may contain an
-          outlier close, sweep, spike, or abnormal displacement.
-          """
+        """
+        If OLS and robust slope disagree a lot, the window may contain an
+        outlier close, sweep, spike, or abnormal displacement.
+        """
 
         df[f"slope_outlier_sensitivity_{window}"] = (df[f"abs_trendline_move_atr_{window}"] - df[f"abs_robust_trendline_move_atr_{window}"]).abs()
 
