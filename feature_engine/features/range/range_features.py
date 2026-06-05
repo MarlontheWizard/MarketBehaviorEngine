@@ -886,189 +886,189 @@ class RangeFeatureExtractor:
 
 
 
-        def _add_multi_window_comparison_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _add_multi_window_comparison_features(self, df: pd.DataFrame) -> pd.DataFrame:
 
-            """
-            Adds relationships between short, medium, and long behavior windows.
+        """
+        Adds relationships between short, medium, and long behavior windows.
 
-            Helps the classifier understand local range inside broader range, local compression inside broader balance,
-            short-term behavior strength relative to medium-term behavior, one-sided short-term pressure inside a broader range,
-            and agreement or disagreement across windows
+        Helps the classifier understand local range inside broader range, local compression inside broader balance,
+        short-term behavior strength relative to medium-term behavior, one-sided short-term pressure inside a broader range,
+        and agreement or disagreement across windows
 
-            This is important because the market can be ranging on 20 candles but trending on 100 candles, compressing locally 
-            inside a broader range, or transitioning on the short window while still balanced on the long window.
+        This is important because the market can be ranging on 20 candles but trending on 100 candles, compressing locally 
+        inside a broader range, or transitioning on the short window while still balanced on the long window.
 
-            This method creates:
+        This method creates:
 
-                - ratio features
-                - difference features
-                - position alignment- range component agreement
-                - range candidate agreement
-                - final range agreement score
-             """
+            - ratio features
+            - difference features
+            - position alignment- range component agreement
+            - range candidate agreement
+            - final range agreement score
+         """
 
-            windows = sorted(self.config.windows)
-
-
-            if len(windows) < 2:
-
-                return df
+        windows = sorted(self.config.windows)
 
 
-            #Compute candidate scores once per window. Avoid repeated calculations inside each pair comparison.
+        if len(windows) < 2:
 
-            df = self._add_range_behavior_candidates(df)
-
-            comparison_features = ["range_width_atr",
-                               "directional_efficiency",
-                               "mid_cross_frequency",
-                               "touch_balance",
-                               "rotation_score",
-                               "flatness_score",
-                               "two_sided_touch_score",
-                               "boundary_activity_score",
-                               "range_behavior_candidate",
-                               "abs_robust_trendline_move_atr",
-                               "one_sided_position_pressure",
-                               "atr_compression_ratio"]
-
-            component_features = ["directional_efficiency",
-                              "flatness_score",
-                              "rotation_score",
-                              "two_sided_touch_score",
-                              "boundary_activity_score"]
-
-
-            for short, long in zip(windows[:-1], windows[1:]):
-
-                # ------------------------------------------------------------
-                # Ratios and differences
-                # --------------------------------------------------------------
-
-                for feature in comparison_features:
-
-                    short_col = f"{feature}_{short}"
-                    long_col = f"{feature}_{long}"
-                    ratio_col = f"{feature}_ratio_{short}_{long}"
-                    diff_col = f"{feature}_diff_{short}_{long}"
-            
-                    self._safe_ratio(df,
-                                 numerator=short_col,
-                                 denominator=long_col,
-                                 output=ratio_col,
-                                 clip=10.0)
-
-                    self._safe_diff(df, left=short_col, right=long_col, output=diff_col)
-
-                # --------------------------------------------------------------
-                # Position alignment
-                # --------------------------------------------------------------
-
-                short_pos_col = f"position_in_range_{short}"
-                long_pos_col = f"position_in_range_{long}"
-                pos_diff_col = f"position_in_range_diff_{short}_{long}"
-                pos_alignment_col = f"position_alignment_{short}_{long}"
-
-
-                if short_pos_col in df.columns and long_pos_col in df.columns:
-    
-                    df[pos_diff_col] = df[short_pos_col] - df[long_pos_col]
-                    
-                    '''
-                    Both position values are clipped 0-1 elsewhere, so abs diff is 0-1.
-                    Higher alignment means short and long windows place price similarly.
-                    '''
-                    
-                    df[pos_alignment_col] = (1.0 - df[pos_diff_col].abs()).clip(0.0, 1.0)
-    
-                else:
-    
-                    df[pos_diff_col] = np.nan
-                    df[pos_alignment_col] = np.nan
-    
-    
-                # --------------------------------------------------------------
-                # Component-level range agreement
-                # --------------------------------------------------------------
-    
-                agreement_components = []
-    
-    
-                for feature in component_features:
-    
-                    short_col = f"{feature}_{short}"
-                    long_col = f"{feature}_{long}"
-    
-                    if short_col not in df.columns or long_col not in df.columns:
-    
-                        continue
-    
-                    
-                    if feature == "directional_efficiency":
-    
-                        #For range agreement, low efficiency is the range-like trait
-    
-                        short_component = 1.0 - df[short_col].clip(0.0, 1.0)
-                        long_component = 1.0 - df[long_col].clip(0.0, 1.0)
-    
-                    else:
-    
-                        short_component = df[short_col].clip(0.0, 1.0)
-                        long_component = df[long_col].clip(0.0, 1.0)
-    
-                    component_agreement = (1.0 - (short_component - long_component).abs()).clip(0.0, 1.0)
-    
-                    agreement_components.append(component_agreement)
-    
-                    component_agreement_col = f"range_component_agreement_{short}_{long}"
-    
-    
-                if agreement_components:
-    
-                    df[component_agreement_col] = pd.concat(agreement_components, axis=1).mean(axis=1)
-    
-    
-                else:
-    
-                    df[component_agreement_col] = np.nan
-    
-    
-                # --------------------------------------------------------------
-                # Candidate-level agreement
-                # -------------------------------------------------------------
-    
-                candidate_short_col = f"range_behavior_candidate_{short}"
-    
-                candidate_long_col = f"range_behavior_candidate_{long}"
-    
-                candidate_agreement_col = f"range_candidate_agreement_{short}_{long}"
-    
-                if candidate_short_col in df.columns and candidate_long_col in df.columns:
-    
-                    df[candidate_agreement_col] = (1.0 - ( df[candidate_short_col] - df[candidate_long_col]).abs()).clip(0.0, 1.0)
-    
-                else:
-    
-                    df[candidate_agreement_col] = np.nan
-    
-                # --------------------------------------------------------------
-                # Final range agreement
-                # --------------------------------------------------------------
-    
-                '''
-                this is a descriptive feature, not the final classifier output.
-                it tells the model whether short and long windows are telling
-                a similar range-behavior story.
-                '''
-    
-                df[f"range_agreement_{short}_{long}"] = pd.concat([df[component_agreement_col],
-                                                                   df[candidate_agreement_col],
-                                                                   df[pos_alignment_col]],
-                                                                  axis=1).mean(axis=1)
-    
-    
-    
             return df
+
+
+        #Compute candidate scores once per window. Avoid repeated calculations inside each pair comparison.
+
+        df = self._add_range_behavior_candidates(df)
+
+        comparison_features = ["range_width_atr",
+                           "directional_efficiency",
+                           "mid_cross_frequency",
+                           "touch_balance",
+                           "rotation_score",
+                           "flatness_score",
+                           "two_sided_touch_score",
+                           "boundary_activity_score",
+                           "range_behavior_candidate",
+                           "abs_robust_trendline_move_atr",
+                           "one_sided_position_pressure",
+                           "atr_compression_ratio"]
+
+        component_features = ["directional_efficiency",
+                          "flatness_score",
+                          "rotation_score",
+                          "two_sided_touch_score",
+                          "boundary_activity_score"]
+
+
+        for short, long in zip(windows[:-1], windows[1:]):
+
+            # ------------------------------------------------------------
+            # Ratios and differences
+            # --------------------------------------------------------------
+
+            for feature in comparison_features:
+
+                short_col = f"{feature}_{short}"
+                long_col = f"{feature}_{long}"
+                ratio_col = f"{feature}_ratio_{short}_{long}"
+                diff_col = f"{feature}_diff_{short}_{long}"
+        
+                self._safe_ratio(df,
+                             numerator=short_col,
+                             denominator=long_col,
+                             output=ratio_col,
+                             clip=10.0)
+
+                self._safe_diff(df, left=short_col, right=long_col, output=diff_col)
+
+            # --------------------------------------------------------------
+            # Position alignment
+            # --------------------------------------------------------------
+
+            short_pos_col = f"position_in_range_{short}"
+            long_pos_col = f"position_in_range_{long}"
+            pos_diff_col = f"position_in_range_diff_{short}_{long}"
+            pos_alignment_col = f"position_alignment_{short}_{long}"
+
+
+            if short_pos_col in df.columns and long_pos_col in df.columns:
+
+                df[pos_diff_col] = df[short_pos_col] - df[long_pos_col]
+                
+                '''
+                Both position values are clipped 0-1 elsewhere, so abs diff is 0-1.
+                Higher alignment means short and long windows place price similarly.
+                '''
+                
+                df[pos_alignment_col] = (1.0 - df[pos_diff_col].abs()).clip(0.0, 1.0)
+
+            else:
+
+                df[pos_diff_col] = np.nan
+                df[pos_alignment_col] = np.nan
+
+
+            # --------------------------------------------------------------
+            # Component-level range agreement
+            # --------------------------------------------------------------
+
+            agreement_components = []
+
+
+            for feature in component_features:
+
+                short_col = f"{feature}_{short}"
+                long_col = f"{feature}_{long}"
+
+                if short_col not in df.columns or long_col not in df.columns:
+
+                    continue
+
+                
+                if feature == "directional_efficiency":
+
+                    #For range agreement, low efficiency is the range-like trait
+
+                    short_component = 1.0 - df[short_col].clip(0.0, 1.0)
+                    long_component = 1.0 - df[long_col].clip(0.0, 1.0)
+
+                else:
+
+                    short_component = df[short_col].clip(0.0, 1.0)
+                    long_component = df[long_col].clip(0.0, 1.0)
+
+                component_agreement = (1.0 - (short_component - long_component).abs()).clip(0.0, 1.0)
+
+                agreement_components.append(component_agreement)
+
+                component_agreement_col = f"range_component_agreement_{short}_{long}"
+
+
+            if agreement_components:
+
+                df[component_agreement_col] = pd.concat(agreement_components, axis=1).mean(axis=1)
+
+
+            else:
+
+                df[component_agreement_col] = np.nan
+
+
+            # --------------------------------------------------------------
+            # Candidate-level agreement
+            # -------------------------------------------------------------
+
+            candidate_short_col = f"range_behavior_candidate_{short}"
+
+            candidate_long_col = f"range_behavior_candidate_{long}"
+
+            candidate_agreement_col = f"range_candidate_agreement_{short}_{long}"
+
+            if candidate_short_col in df.columns and candidate_long_col in df.columns:
+
+                df[candidate_agreement_col] = (1.0 - ( df[candidate_short_col] - df[candidate_long_col]).abs()).clip(0.0, 1.0)
+
+            else:
+
+                df[candidate_agreement_col] = np.nan
+
+            # --------------------------------------------------------------
+            # Final range agreement
+            # --------------------------------------------------------------
+
+            '''
+            this is a descriptive feature, not the final classifier output.
+            it tells the model whether short and long windows are telling
+            a similar range-behavior story.
+            '''
+
+            df[f"range_agreement_{short}_{long}"] = pd.concat([df[component_agreement_col],
+                                                               df[candidate_agreement_col],
+                                                               df[pos_alignment_col]],
+                                                              axis=1).mean(axis=1)
+
+
+
+        return df
 
 
         
