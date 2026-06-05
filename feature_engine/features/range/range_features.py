@@ -174,6 +174,10 @@ class RangeFeatureExtractor:
     
         self._validate_input_schema(data)
         self._validate_ohlc_data(data)
+
+        data["timestamp"] = pd.to_datetime(data["timestamp"])
+
+        data = data.sort_values("timestamp").reset_index(drop=True)
     
         data = self._add_atr(data)
     
@@ -252,6 +256,11 @@ class RangeFeatureExtractor:
         selected = []
     
         for col in df.columns:
+
+            
+            if self._is_zscore_column(col):
+
+                continue
     
             if any(excluded in col for excluded in exclude_keywords):
     
@@ -1080,6 +1089,7 @@ class RangeFeatureExtractor:
 
             agreement_components = []
 
+            component_agreement_col = f"range_component_agreement_{short}_{long}"
 
             for feature in component_features:
 
@@ -1107,13 +1117,10 @@ class RangeFeatureExtractor:
 
                 agreement_components.append(component_agreement)
 
-                component_agreement_col = f"range_component_agreement_{short}_{long}"
-
-
+            
             if agreement_components:
 
                 df[component_agreement_col] = pd.concat(agreement_components, axis=1).mean(axis=1)
-
 
             else:
 
@@ -1207,6 +1214,11 @@ class RangeFeatureExtractor:
             
             raise ValueError(f"Invalid OHLC data found in {len(bad_rows)} rows. "
                               "Expected high >= open/close/low and low <= open/close/high.")
+
+
+    def _is_zscore_column(self, col: str) -> bool:
+
+        return any(col.endswith(f"_z{z_window}") for z_window in self.config.zscore_windows)
 
 
         
