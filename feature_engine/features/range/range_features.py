@@ -352,6 +352,9 @@ class RangeFeatureExtractor:
 
     
 
+    
+    
+
     def _add_slope_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
         
         """
@@ -1075,3 +1078,51 @@ class RangeFeatureExtractor:
     # ---------------------------------------------------------------------
     #                            Helper Functions
     # ---------------------------------------------------------------------
+
+    def _min_periods(self, window: int) -> int:
+
+        return max(2, int(window * self.config.min_periods_ratio))
+
+
+    def _validate_input_schema(self, df: pd.DataFrame) -> None:
+
+        required_columns = ["timestamp", "open", "high", "low", "close"]
+    
+        missing = [col for col in required_columns if col not in df.columns]
+    
+        if missing:
+    
+            raise ValueError(f"RangeFeatureExtractor expected OHLC candle data with columns "
+                             f"{required_columns}, but missing: {missing}. "
+                             f"Received columns: {list(df.columns)}")
+
+    def _validate_ohlc_data(self, df: pd.DataFrame) -> None:
+        
+        required = ["open", "high", "low", "close"]
+    
+        for col in required:
+            
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    
+        if df[required].isna().any().any():
+            
+            bad_cols = df[required].columns[df[required].isna().any()].tolist()
+            
+            raise ValueError(f"OHLC columns contain NaN/non-numeric values: {bad_cols}")
+    
+        bad_rows = df[
+            (df["high"] < df["low"])
+            | (df["high"] < df["open"])
+            | (df["high"] < df["close"])
+            | (df["low"] > df["open"])
+            | (df["low"] > df["close"])
+        ]
+
+        
+        if len(bad_rows) > 0:
+            
+            raise ValueError(f"Invalid OHLC data found in {len(bad_rows)} rows. "
+                              "Expected high >= open/close/low and low <= open/close/high.")
+
+
+        
