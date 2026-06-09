@@ -27,8 +27,8 @@ class RangeFeatureConfig:
     
         Percentage of the rolling range width used to define upper/lower boundary zones. The reason this is needed is because we must assume that
         the high and low of a range is not respected by price. A new high or low can be formed at any time. Therefore I establish a small zone 
-        beyond the concrete high/low of the range. I will respect this assumption even though this classifier is not meant to predict future 
-        behavior.
+        inside the upper/lower portion of the rolling range. I will respect this assumption even though this classifier is not meant to predict
+        future behavior.
         
         For example... zone_pct = 0.15 means: upper zone = top 15% of the range | lower zone = bottom 15% of the range
 
@@ -156,6 +156,9 @@ class RangeFeatureExtractor:
     
             self.config.zscore_clip = zscore_clip
 
+        self.config.windows = tuple(sorted(self.config.windows))
+        self.config.zscore_windows = tuple(sorted(self.config.zscore_windows))
+
         self._validate_config()
 
         
@@ -171,42 +174,81 @@ class RangeFeatureExtractor:
         """
     
         data = df.copy()
-    
+
         self._validate_input_schema(data)
+    
         self._validate_ohlc_data(data)
-
+    
         data["timestamp"] = pd.to_datetime(data["timestamp"])
-
+    
         data = data.sort_values("timestamp").reset_index(drop=True)
     
-        data = self._add_atr(data)
+        # ------------------------------------------------------------
+        # ATR
+        # ------------------------------------------------------------
+    
+        atr_features = self._build_atr_features(data)
+    
+        data = pd.concat([data, atr_features], axis=1)
+
+        
+        # ------------------------------------------------------------ 
+        # Stage 2: per-window base features
+        # ------------------------------------------------------------
+    
     
         for window in self.config.windows:
-            
-            data = self._add_range_geometry_features(data, window)
-            
-            data = self._add_directional_efficiency_features(data, window)
-            
-            data = self._add_boundary_touch_features(data, window)
-            
-            data = self._add_rotation_features(data, window)
-            
-            data = self._add_slope_features(data, window)
-            
-            data = self._add_lifecycle_features(data, window)
-
-        '''
-        ATR context should happen before multi-window comparison because
-        multi-window comparison uses atr_compression_ratio_N.
-        '''
-        
-        data = self._add_atr_context_features(data)
     
-        #multi window comparison creates range candidates and cross-window agreement
-        data = self._add_multi_window_comparison_features(data)
+            geometry = self._build_range_geometry_features(data, window)
+    
+            data = pd.concat([data, geometry], axis=1)
+    
+            boundary = self._build_boundary_touch_features(data, window)
+    
+            rotation = self._build_rotation_features(data, window)
+    
+            directional = self._build_directional_efficiency_features(data, window)
+    
+            slope = self._build_slope_features(data, window)
+    
+            base_features = pd.concat( [directional, boundary, rotation, slope], axis=1)
+    
+            data = pd.concat([data, base_features], axis=1)
+    
+            lifecycle = self._build_lifecycle_features(data, window)
+    
+            data = pd.concat([data, lifecycle], axis=1)
 
-        #all features ready, add rolling z scores
-        data = self._add_rolling_zscores(data)
+        
+        # ------------------------------------------------------------
+        # cross-window context
+        # ------------------------------------------------------------
+    
+        atr_context = self._build_atr_context_features(data)
+
+        data = pd.concat([data, atr_context], axis=1)
+        
+        range_candidates = self._build_range_behavior_candidates(data)
+
+        
+        data = pd.concat([data, range_candidates], axis=1)
+        
+        multi_window = self._build_multi_window_comparison_features(data)
+
+        
+        data = pd.concat([data, multi_window], axis=1)
+
+        
+        # ------------------------------------------------------------
+        # rolling z-scores
+        # ------------------------------------------------------------
+    
+        zscores = self._build_rolling_zscores(data)
+    
+        data = pd.concat([data, zscores], axis=1)
+
+        
+        data = data.copy()
 
         
         return data
@@ -242,8 +284,7 @@ class RangeFeatureExtractor:
                             "range_candidate_agreement_",
                             "slope_outlier_sensitivity_"]
     
-        exclude_keywords = ["_z",
-                            "range_high_",
+        exclude_keywords = ["range_high_",
                             "range_low_",
                             "range_mid_",
                             "upper_zone_start_",
@@ -276,7 +317,7 @@ class RangeFeatureExtractor:
 
 
     
-    def _add_rolling_zscores(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _build_rolling_zscores(self, df: pd.DataFrame) -> pd.DataFrame:
     
         """
         Adds rolling z-scores.
@@ -289,31 +330,39 @@ class RangeFeatureExtractor:
         influencing its own normalization.
         """
 
-        for base_col in self._zscore_feature_columns(df):
+        features: dict[str, pd.Series] = {}
+
         
+        for base_col in self._zscore_feature_columns(df):
+
+            
             if base_col not in df.columns:
-                
+    
                 continue
 
+            
             x = df[base_col].astype(float)
-
+    
             for z_window in self.config.zscore_windows:
-                
+    
                 min_periods = self._min_periods(z_window)
+    
+                rolling_mean = ( x.rolling(window=z_window, min_periods=min_periods).mean().shift(1))
 
-                rolling_mean = (x.rolling(window=z_window, min_periods=min_periods).mean().shift(1))
-
+                
                 rolling_std = (x.rolling(window=z_window, min_periods=min_periods).std(ddof=0).shift(1))
-
-                z_col = f"{base_col}_z{z_window}"
-
                 safe_std = rolling_std.where( rolling_std > self.config.eps, np.nan)
 
+                
                 z = (x - rolling_mean) / safe_std
 
-                df[z_col] = z.clip(lower=-self.config.zscore_clip, upper=self.config.zscore_clip)
+                
+                features[f"{base_col}_z{z_window}"] = z.clip(
+                    lower=-self.config.zscore_clip,
+                    upper=self.config.zscore_clip)
 
-        return df
+        
+        return pd.DataFrame(features, index=df.index)
 
 
     # ---------------------------------------------------------------------
@@ -386,20 +435,22 @@ class RangeFeatureExtractor:
 
         values = np.asarray(values, dtype=float)
 
+        
         if len(values) < 2:
-    
+
             return np.nan
-    
+
         if np.isnan(values).any():
-    
+
             return np.nan
-    
+
         n = len(values)
-    
+
         idx_i, idx_j = np.triu_indices(n, k=1)
-    
+
         slopes = (values[idx_j] - values[idx_i]) / (idx_j - idx_i)
-    
+
+        
         return float(np.median(slopes))
 
 
@@ -435,7 +486,7 @@ class RangeFeatureExtractor:
 
     
 
-    def _add_slope_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+    def _build_slope_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
         
         """
         Adds slope/flatness features for a rolling close window.
@@ -467,78 +518,57 @@ class RangeFeatureExtractor:
 
         c = self.config
         min_periods = self._min_periods(window)
+        
         atr_col = f"atr_{c.atr_window}"
 
+        close_slope = (df["close"].rolling(window=window, min_periods=min_periods).apply(self._linear_regression_slope, raw=True))
+
+        close_slope_atr = close_slope / (df[atr_col] + c.eps)
+
+        abs_close_slope_atr = close_slope_atr.abs()
+
+        trendline_move_atr = ( close_slope * (window - 1)) / (df[atr_col] + c.eps)
+
+        abs_trendline_move_atr = trendline_move_atr.abs()
+
+        robust_close_slope = (df["close"].rolling(window=window, min_periods=min_periods).apply(self._theil_sen_slope, raw=True))
+
+        robust_close_slope_atr = robust_close_slope / (df[atr_col] + c.eps)
+
+        abs_robust_close_slope_atr = robust_close_slope_atr.abs()
+
+        robust_trendline_move_atr = (robust_close_slope * (window - 1)) / (df[atr_col] + c.eps)
+
+        abs_robust_trendline_move_atr = robust_trendline_move_atr.abs()
+
+        flatness_score = (1.0 / (1.0 + abs_robust_trendline_move_atr)).clip(lower=0.0, upper=1.0)
+
+        slope_outlier_sensitivity = (abs_trendline_move_atr - abs_robust_trendline_move_atr).abs()
         
-        # ------------------------------------------------------------------
-        # Ordinary least-squares slope
-        # ------------------------------------------------------------------
 
-        slope_col = f"close_slope_{window}"
+        return pd.DataFrame(
 
-        df[slope_col] = (df["close"].rolling(window=window, min_periods=min_periods).apply(self._linear_regression_slope, raw=True))
-
-        #Per-candle OLS slope normalized by ATR
-        df[f"close_slope_atr_{window}"] = (df[slope_col] / (df[atr_col] + c.eps))
-
-        df[f"abs_close_slope_atr_{window}"] = (df[f"close_slope_atr_{window}"].abs())
-
-        #Total fitted OLS movement across the whole window, normalized by ATR
-        df[f"trendline_move_atr_{window}"] = ((df[slope_col] * (window - 1)) / (df[atr_col] + c.eps))
-
-        df[f"abs_trendline_move_atr_{window}"] = (df[f"trendline_move_atr_{window}"].abs())
-
-
-        # ------------------------------------------------------------------
-        # Theil-Sen slope
-        # ------------------------------------------------------------------
-
-        robust_slope_col = f"robust_close_slope_{window}"
-
-        df[robust_slope_col] = (df["close"].rolling(window=window, min_periods=min_periods).apply(self._theil_sen_slope, raw=True))
-
-        # Per-candle robust slope normalized by ATR.
-        df[f"robust_close_slope_atr_{window}"] = (df[robust_slope_col] / (df[atr_col] + c.eps))
-
-        df[f"abs_robust_close_slope_atr_{window}"] = (df[f"robust_close_slope_atr_{window}"].abs())
-
-        # Total fitted robust movement across the whole window, normalized by ATR.
-        df[f"robust_trendline_move_atr_{window}"] = ((df[robust_slope_col] * (window - 1)) / (df[atr_col] + c.eps))
-
-        df[f"abs_robust_trendline_move_atr_{window}"] = (df[f"robust_trendline_move_atr_{window}"].abs())
-
-        # ------------------------------------------------------------------
-        # Flatness score
-        # ------------------------------------------------------------------
-        """
-        Main flatness uses robust slope because it is less distorted by
-        one-candle outliers or abnormal closes.
-    
-        flatness_score close to 1 = flatter / more range-like
-        flatness_score close to 0 = more tilted / more directional
-        """
-
-        df[f"flatness_score_{window}"] = (1.0 / (1.0 + df[f"abs_robust_trendline_move_atr_{window}"])).clip(lower=0.0, upper=1.0)
-
-        # ------------------------------------------------------------------
-        # Outlier sensitivity
-        # ------------------------------------------------------------------
-        """
-        If OLS and robust slope disagree a lot, the window may contain an
-        outlier close, sweep, spike, or abnormal displacement.
-        """
-
-        df[f"slope_outlier_sensitivity_{window}"] = (df[f"abs_trendline_move_atr_{window}"] - df[f"abs_robust_trendline_move_atr_{window}"]).abs()
-
-
-        return df
+            {
+                f"close_slope_{window}": close_slope,
+                f"close_slope_atr_{window}": close_slope_atr,
+                f"abs_close_slope_atr_{window}": abs_close_slope_atr,
+                f"trendline_move_atr_{window}": trendline_move_atr,
+                f"abs_trendline_move_atr_{window}": abs_trendline_move_atr,
+                f"robust_close_slope_{window}": robust_close_slope,
+                f"robust_close_slope_atr_{window}": robust_close_slope_atr,
+                f"abs_robust_close_slope_atr_{window}": abs_robust_close_slope_atr,
+                f"robust_trendline_move_atr_{window}": robust_trendline_move_atr,
+                f"abs_robust_trendline_move_atr_{window}": abs_robust_trendline_move_atr,
+                f"flatness_score_{window}": flatness_score,
+                f"slope_outlier_sensitivity_{window}": slope_outlier_sensitivity,
+            }, index=df.index)
 
 
 
     # ---------------------------------------------------------------------
     #                                  ATR
     # ---------------------------------------------------------------------
-    def _add_atr(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _build_atr_features(self, df: pd.DataFrame) -> pd.DataFrame:
 
         """
         Adds True Range and Wilder ATR.
@@ -561,15 +591,13 @@ class RangeFeatureExtractor:
         true_range_components = pd.concat( [df["high"] - df["low"], (df["high"] - prev_close).abs(), (df["low"] - prev_close).abs()], axis=1)
 
         
-        df["true_range"] = true_range_components.max(axis=1)
+        true_range = true_range_components.max(axis=1)
 
         
-        df[atr_col] = (df["true_range"].ewm(alpha=1.0 / c.atr_window,
-                                            adjust=False,
-                                            min_periods=self._min_periods(c.atr_window)).mean())
+        atr = true_range.ewm(alpha=1.0 / c.atr_window, adjust=False, min_periods=self._min_periods(c.atr_window)).mean()
 
         
-        return df
+        return pd.DataFrame({"true_range": true_range, atr_col: atr}, index=df.index)
 
 
 
@@ -577,53 +605,50 @@ class RangeFeatureExtractor:
     #                               Geometry
     # ---------------------------------------------------------------------
     
-    def _add_range_geometry_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+    def _build_range_geometry_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
 
         c = self.config
-
         min_periods = self._min_periods(window)
 
+        
         atr_col = f"atr_{c.atr_window}"
-        high_col = f"range_high_{window}"
-        low_col = f"range_low_{window}"
-        mid_col = f"range_mid_{window}"
-        width_col = f"range_width_{window}"
+
+        range_high = df["high"].rolling(window, min_periods=min_periods).max()
+        range_low = df["low"].rolling(window, min_periods=min_periods).min()
+        range_mid = (range_high + range_low) / 2.0
+        range_width = range_high - range_low
+    
+        upper_zone_start = range_high - (range_width * c.zone_pct)
+        lower_zone_end = range_low + (range_width * c.zone_pct)
+    
+        position_in_range = (( df["close"] - range_low) / (range_width + c.eps )).clip(lower=0.0, upper=1.0)
+    
+        distance_to_range_high = range_high - df["close"]
+        distance_to_range_low = df["close"] - range_low
 
 
-        df[high_col] = df["high"].rolling(window, min_periods=min_periods).max()
-
-        df[low_col] = df["low"].rolling(window, min_periods=min_periods).min()
-
-        df[mid_col] = (df[high_col] + df[low_col]) / 2.0
-
-        df[width_col] = df[high_col] - df[low_col]
-
-        df[f"range_width_atr_{window}"] = df[width_col] / (df[atr_col] + c.eps)
-
-        df[f"upper_zone_start_{window}"] = df[high_col] - (df[width_col] * c.zone_pct)
-
-        df[f"lower_zone_end_{window}"] = df[low_col] + (df[width_col] * c.zone_pct)
-
-        df[f"position_in_range_{window}"] = ((df["close"] - df[low_col]) / (df[width_col] + c.eps)).clip(lower=0.0, upper=1.0)
-
-        df[f"distance_to_range_high_{window}"] = df[high_col] - df["close"]
-
-        df[f"distance_to_range_low_{window}"] = df["close"] - df[low_col]
-
-        df[f"distance_to_range_high_atr_{window}"] = (df[f"distance_to_range_high_{window}"] / (df[atr_col] + c.eps))
-
-        df[f"distance_to_range_low_atr_{window}"] = (df[f"distance_to_range_low_{window}"] / (df[atr_col] + c.eps))
-
-        df[f"current_distance_from_mid_{window}"] = ((df["close"] - df[mid_col]).abs() / (df[width_col] + c.eps))
-
-
-        return df
+        return pd.DataFrame(
+        {
+            f"range_high_{window}": range_high,
+            f"range_low_{window}": range_low,
+            f"range_mid_{window}": range_mid,
+            f"range_width_{window}": range_width,
+            f"range_width_atr_{window}": range_width / (df[atr_col] + c.eps),
+            f"upper_zone_start_{window}": upper_zone_start,
+            f"lower_zone_end_{window}": lower_zone_end,
+            f"position_in_range_{window}": position_in_range,
+            f"distance_to_range_high_{window}": distance_to_range_high,
+            f"distance_to_range_low_{window}": distance_to_range_low,
+            f"distance_to_range_high_atr_{window}": distance_to_range_high / (df[atr_col] + c.eps),
+            f"distance_to_range_low_atr_{window}": distance_to_range_low / (df[atr_col] + c.eps),
+            f"current_distance_from_mid_{window}": ((df["close"] - range_mid).abs() / (range_width + c.eps))
+        }, index=df.index)
 
 
     # ---------------------------------------------------------------------
     #                              Directional
     # ---------------------------------------------------------------------
-    def _add_directional_efficiency_features(self,df: pd.DataFrame, window: int) -> pd.DataFrame:
+    def _build_directional_efficiency_features(self,df: pd.DataFrame, window: int) -> pd.DataFrame:
 
         c = self.config
 
@@ -633,57 +658,50 @@ class RangeFeatureExtractor:
 
         total_movement = (df["close"].diff().abs().rolling(window, min_periods=min_periods).sum())
 
-        df[f"directional_efficiency_{window}"] = net_change / (total_movement + c.eps)
-
-        return df
+        return pd.DataFrame({ f"directional_efficiency_{window}": net_change / (total_movement + c.eps) },index=df.index)
 
 
     # ---------------------------------------------------------------------
     #                              Rotational
     # ---------------------------------------------------------------------
 
-    def _add_rotation_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+    def _build_rotation_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
 
         c = self.config
 
         min_periods = self._min_periods(window)
-
         mid_col = f"range_mid_{window}"
         width_col = f"range_width_{window}"
-
-        #avoid counting the transition from invalid to valid midpoint as a real midpoint cross
-        above_mid = (df["close"] > df[mid_col]).where(df[mid_col].notna(), np.nan)
-
+    
+        above_mid = (df["close"] > df[mid_col]).where( df[mid_col].notna(), np.nan)
+    
         mid_cross = (above_mid != above_mid.shift(1)).astype(float)
-
-        mid_cross = mid_cross.where(above_mid.notna() & above_mid.shift(1).notna(), np.nan)
         
-        df[f"mid_cross_count_{window}"] = (mid_cross.rolling(window, min_periods=min_periods).sum())
-
-        df[f"mid_cross_frequency_{window}"] = df[f"mid_cross_count_{window}"] / window
-
-        df[f"avg_distance_from_mid_{window}"] = (((df["close"] - df[mid_col]).abs() / (df[width_col] + c.eps)).rolling(window,
-                                                                                                                       min_periods=min_periods)
-                                                                                                                       .mean())
-        '''
-        Current rotational score:
-        ->more midpoint crossing helps
-        ->lower average distance from midpoint helps
-        '''
+        mid_cross = mid_cross.where( above_mid.notna() & above_mid.shift(1).notna(), np.nan)
+    
+        mid_cross_count = mid_cross.rolling( window, min_periods=min_periods).sum()
+    
+        mid_cross_frequency = mid_cross_count / window
+    
+        avg_distance_from_mid = ( ((df["close"] - df[mid_col]).abs() / (df[width_col] + c.eps)).rolling(window, min_periods=min_periods).mean())
+    
+        rotation_score = (mid_cross_frequency * (1.0 - avg_distance_from_mid.clip(0.0, 1.0))).clip(lower=0.0, upper=1.0)
+    
+    
         
-        df[f"rotation_score_{window}"] = (df[f"mid_cross_frequency_{window}"] * (1.0 - df[f"avg_distance_from_mid_{window}"].clip(0.0, 1.0))
-                                         ).clip(lower=0.0, upper=1.0)
+        return pd.DataFrame(
+            {
+                f"mid_cross_count_{window}": mid_cross_count,
+                f"mid_cross_frequency_{window}": mid_cross_frequency,
+                f"avg_distance_from_mid_{window}": avg_distance_from_mid,
+                f"rotation_score_{window}": rotation_score,
+            }, index=df.index)
 
-
-        
-        return df
-
-
-
+    
     # ---------------------------------------------------------------------
     #                              Lifecycle
     # ---------------------------------------------------------------------
-    def _add_lifecycle_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+    def _build_lifecycle_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
 
         """
         Adds current-change style features. 
@@ -697,23 +715,25 @@ class RangeFeatureExtractor:
             - transitioning
         """
 
-        sw = self.config.slope_window
-
         c = self.config
 
-        
-        lifecycle_base_cols = [f"range_width_atr_{window}",
-                               f"directional_efficiency_{window}",
-                               f"touch_balance_{window}",
-                               f"mid_cross_frequency_{window}",
-                               f"boundary_activity_score_{window}",
-                               f"two_sided_touch_score_{window}",
-                               f"rotation_score_{window}",
-                               f"flatness_score_{window}",
-                               f"position_in_range_{window}"]
+        sw = c.slope_window
 
+        features: dict[str, pd.Series] = {}
 
         
+        lifecycle_base_cols = [
+            f"range_width_atr_{window}",
+            f"directional_efficiency_{window}",
+            f"touch_balance_{window}",
+            f"mid_cross_frequency_{window}",
+            f"boundary_activity_score_{window}",
+            f"two_sided_touch_score_{window}",
+            f"rotation_score_{window}",
+            f"flatness_score_{window}",
+            f"position_in_range_{window}"]
+        
+
         for col in lifecycle_base_cols:
 
             if col not in df.columns:
@@ -721,52 +741,69 @@ class RangeFeatureExtractor:
                 continue
 
             
-            df[f"{col}_change_{sw}"] = df[col] - df[col].shift(sw)
+            features[f"{col}_change_{sw}"] = df[col] - df[col].shift(sw)
 
-            df[f"{col}_slope_{sw}"] = (df[col].rolling(sw, min_periods=max(2, int(sw * 0.8))).apply(self._linear_regression_slope, raw=True))
+            features[f"{col}_slope_{sw}"] = (df[col].rolling(sw, min_periods=max(2, int(sw * 0.8))).apply(self._linear_regression_slope, raw=True))
 
         
-        #range-width state candidates which are just numeric descriptors, not final classification labels
-
         width_col = f"range_width_atr_{window}"
 
         width_slope_col = f"{width_col}_slope_{sw}"
 
-        df[f"range_expansion_pressure_{window}"] = (df[width_slope_col].clip(lower=0.0))
+        if width_slope_col in features:
 
-        df[f"range_compression_pressure_{window}"] = (( -df[width_slope_col]).clip(lower=0.0))
+            features[f"range_expansion_pressure_{window}"] = (features[width_slope_col].clip(lower=0.0))
+
+            
+            features[f"range_compression_pressure_{window}"] = ((-features[width_slope_col]).clip(lower=0.0))
 
         
-        #directional pressure rising while range features weaken can indicate transition
+        else:
+
+            features[f"range_expansion_pressure_{window}"] = pd.Series(np.nan, index=df.index)
+
+            features[f"range_compression_pressure_{window}"] = pd.Series(np.nan, index=df.index)
+
+        
         de_slope_col = f"directional_efficiency_{window}_slope_{sw}"
 
-        df[f"directional_pressure_change_{window}"] = df[de_slope_col]
-
-        #position persistence near upper/lower area.
+        features[f"directional_pressure_change_{window}"] = features.get(de_slope_col, pd.Series(np.nan, index=df.index))
 
         pos_col = f"position_in_range_{window}"
 
-        df[f"time_near_upper_{window}"] = ((df[pos_col] >= 1.0 - c.zone_pct).astype(float).rolling(window, min_periods=self._min_periods(window))
-                                          .mean())
+        
+        if pos_col in df.columns:
 
+            time_near_upper = ((df[pos_col] >= 1.0 - c.zone_pct).astype(float).rolling(window, min_periods=self._min_periods(window)).mean())
+
+            time_near_lower = ((df[pos_col] <= c.zone_pct).astype(float).rolling(window, min_periods=self._min_periods(window)).mean())
+
+            
+            one_sided_position_pressure = pd.concat([time_near_upper, time_near_lower], axis=1).max(axis=1)
 
         
-        df[f"time_near_lower_{window}"] = ((df[pos_col] <= c.zone_pct).astype(float).rolling(window, min_periods=self._min_periods(window))
-                                          .mean())
+        else:
+
+            time_near_upper = pd.Series(np.nan, index=df.index)
+
+            time_near_lower = pd.Series(np.nan, index=df.index)
+
+            one_sided_position_pressure = pd.Series(np.nan, index=df.index)
 
         
-        df[f"one_sided_position_pressure_{window}"] = (pd.concat([df[f"time_near_upper_{window}"], df[f"time_near_lower_{window}"]],axis=1
-                                                                ).max(axis=1))
+        features[f"time_near_upper_{window}"] = time_near_upper
 
+        features[f"time_near_lower_{window}"] = time_near_lower
 
-        
-        return df
+        features[f"one_sided_position_pressure_{window}"] = one_sided_position_pressure
+
+        return pd.DataFrame(features, index=df.index)
 
         
     # ---------------------------------------------------------------------
     #                              Boundaries
     # ---------------------------------------------------------------------
-    def _add_boundary_touch_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+    def _build_boundary_touch_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
 
         c = self.config
 
@@ -774,41 +811,38 @@ class RangeFeatureExtractor:
 
         upper_zone_col = f"upper_zone_start_{window}"
         lower_zone_col = f"lower_zone_end_{window}"
-        near_upper_col = f"near_upper_zone_{window}"
-        near_lower_col = f"near_lower_zone_{window}"
+        near_upper = (df["high"] >= df[upper_zone_col]).astype(float)
+        near_lower = (df["low"] <= df[lower_zone_col]).astype(float)
+        upper_touch_count = near_upper.rolling(window, min_periods=min_periods).sum()
 
+        lower_touch_count = near_lower.rolling(window, min_periods=min_periods).sum()
 
-        df[near_upper_col] = (df["high"] >= df[upper_zone_col]).astype(float)
+        total_touch_count = upper_touch_count + lower_touch_count
 
-        df[near_lower_col] = (df["low"] <= df[lower_zone_col]).astype(float)
+        boundary_activity_score = (total_touch_count / (2.0 * window)).clip(lower=0.0, upper=1.0)
 
-        upper_touch_col = f"upper_touch_count_{window}"
+        max_touches = pd.concat([upper_touch_count, lower_touch_count], axis=1).max(axis=1)
 
-        lower_touch_col = f"lower_touch_count_{window}"
+        min_touches = pd.concat([upper_touch_count, lower_touch_count], axis=1).min(axis=1)
 
-        df[upper_touch_col] = (df[near_upper_col].rolling(window, min_periods=min_periods).sum())
+        touch_balance = min_touches / (max_touches + c.eps)
 
+        two_sided_touch_score = (touch_balance * boundary_activity_score).clip(lower=0.0, upper=1.0)
 
-        df[lower_touch_col] = (df[near_lower_col].rolling(window, min_periods=min_periods).sum())
-
-        df[f"upper_touch_frequency_{window}"] = df[upper_touch_col] / window
-        df[f"lower_touch_frequency_{window}"] = df[lower_touch_col] / window
         
-        df[f"total_touch_count_{window}"] = (df[upper_touch_col] + df[lower_touch_col])
-
-        df[f"boundary_activity_score_{window}"] = (df[f"total_touch_count_{window}"] / (2.0 * window)).clip(lower=0.0, upper=1.0)
-
-        max_touches = pd.concat([df[upper_touch_col], df[lower_touch_col]],axis=1).max(axis=1)
-
-        min_touches = pd.concat([df[upper_touch_col], df[lower_touch_col]], axis=1).min(axis=1)
-
-        df[f"touch_balance_{window}"] = min_touches / (max_touches + c.eps)
-
-        df[f"two_sided_touch_score_{window}"] = (df[f"touch_balance_{window}"] * df[f"boundary_activity_score_{window}"]).clip(lower=0.0,
-                                                                                                                               upper=1.0)
-
-
-        return df
+        return pd.DataFrame(
+            {
+                f"near_upper_zone_{window}": near_upper,
+                f"near_lower_zone_{window}": near_lower,
+                f"upper_touch_count_{window}": upper_touch_count,
+                f"lower_touch_count_{window}": lower_touch_count,
+                f"upper_touch_frequency_{window}": upper_touch_count / window,
+                f"lower_touch_frequency_{window}": lower_touch_count / window,
+                f"total_touch_count_{window}": total_touch_count,
+                f"boundary_activity_score_{window}": boundary_activity_score,
+                f"touch_balance_{window}": touch_balance,
+                f"two_sided_touch_score_{window}": two_sided_touch_score,
+            }, index=df.index)
 
 
 
@@ -817,7 +851,7 @@ class RangeFeatureExtractor:
     #                           Window Comaparison
     # ---------------------------------------------------------------------
     
-    def _safe_ratio(self, df: pd.DataFrame, numerator: str,  denominator: str, output: str, *, clip: float | None = 10.0) -> None:
+    def _make_safe_ratio(self, df: pd.DataFrame, numerator: str,  denominator: str, *, clip: float | None = 10.0) -> pd.Series:
 
         """
         Adds a safe ratio feature.
@@ -826,32 +860,30 @@ class RangeFeatureExtractor:
         Try range_width_atr_20 / range_width_atr_50 as an example to understand this more.
         """
 
+        
         if numerator not in df.columns or denominator not in df.columns:
+    
+            return pd.Series(np.nan, index=df.index)
 
-            df[output] = np.nan
+        
+        numer = df[numerator].astype(float)
+        denom = df[denominator].astype(float)
+    
+        safe_denom = denom.where( denom.abs() > self.config.eps, np.nan)
 
-            return
+        
+        ratio = numer / safe_denom
 
-
-        dividend = df[numerator].astype(float)
-
-        divisor = df[denominator].astype(float)
-
-        safe_divisor = divisor.where(divisor.abs() > self.config.eps, np.nan)
-
-        ratio = dividend / safe_divisor
-
-
+        
         if clip is not None:
-
+    
             ratio = ratio.clip(lower=-clip, upper=clip)
 
+        
+        return ratio
 
-        df[output] = ratio
 
-
-
-    def _safe_diff(self, df: pd.DataFrame, left: str, right: str, output: str) -> None:
+    def _make_safe_diff(self, df: pd.DataFrame, left: str, right: str) -> pd.Series:
 
         """
         Adds a difference feature.
@@ -859,16 +891,14 @@ class RangeFeatureExtractor:
 
         if left not in df.columns or right not in df.columns:
 
-            df[output] = np.nan
+            return pd.Series(np.nan, index=df.index)
 
-            return
-
-
-        df[output] = df[left].astype(float) - df[right].astype(float)
+        
+        return df[left].astype(float) - df[right].astype(float)
 
 
-
-    def _add_atr_context_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        
+    def _build_atr_context_features(self, df: pd.DataFrame) -> pd.DataFrame:
 
         """
         Adds ATR compression/expansion context features.
@@ -884,35 +914,38 @@ class RangeFeatureExtractor:
 
         atr_col = f"atr_{self.config.atr_window}"
 
-
+        
         if atr_col not in df.columns:
+    
+            raise ValueError(f"Missing ATR column: {atr_col}. "
+                              "Call _build_atr_features() before _build_atr_context_features().")
 
-            raise ValueError(f"Missing ATR column: {atr_col}. " "Call _add_atr() before _add_atr_context_features().")
+
+        
+        features: dict[str, pd.Series] = {}
 
         
         for window in sorted(self.config.windows):
 
-            atr_mean_col = f"atr_mean_{window}"
-
-            ratio_col = f"atr_compression_ratio_{window}"
-
-            df[atr_mean_col] = (df[atr_col].rolling( window=window, min_periods=self._min_periods(window))
-                                                                                                          .mean()
-                                                                                                          .shift(1))
-
-            safe_mean = df[atr_mean_col].where( df[atr_mean_col].abs() > self.config.eps, np.nan)
+            
+            atr_mean = (df[atr_col].rolling(window=window, min_periods=self._min_periods(window)).mean().shift(1))
+    
+            safe_mean = atr_mean.where(atr_mean.abs() > self.config.eps, np.nan)
 
             
-            df[ratio_col] = (df[atr_col] / safe_mean).clip(lower=0.0, upper=10.0)
+            atr_compression_ratio = ( df[atr_col] / safe_mean).clip(lower=0.0, upper=10.0)
+
+            
+            features[f"atr_mean_{window}"] = atr_mean
+            features[f"atr_compression_ratio_{window}"] = atr_compression_ratio
 
         
-
-        return df
-
+        return pd.DataFrame(features, index=df.index)
 
 
 
-    def _add_range_behavior_candidates(self, df: pd.DataFrame) -> pd.DataFrame:
+
+    def _build_range_behavior_candidates(self, df: pd.DataFrame) -> pd.DataFrame:
 
         """
         Creates a soft range-behavior candidate score for each configured window. This is NOT the final model probability.
@@ -929,47 +962,53 @@ class RangeFeatureExtractor:
         confirm balanced/ranging behavior. Also boundary activity helps, but should not dominate.
         """
 
-        for window in sorted(self.config.windows):
-
-            required_cols = [f"directional_efficiency_{window}",
-                             f"flatness_score_{window}",
-                             f"rotation_score_{window}",
-                             f"two_sided_touch_score_{window}",
-                             f"boundary_activity_score_{window}"]
-
-            missing = [col for col in required_cols if col not in df.columns]
-
-            candidate_col = f"range_behavior_candidate_{window}"
-
-            if missing:
-
-                df[candidate_col] = np.nan
-
-                continue
-
-            
-            inefficiency = 1.0 - df[f"directional_efficiency_{window}"].clip(0.0, 1.0)
-
-            flatness = df[f"flatness_score_{window}"].clip(0.0, 1.0)
-
-            rotation = df[f"rotation_score_{window}"].clip(0.0, 1.0)
-
-            two_sided = df[f"two_sided_touch_score_{window}"].clip(0.0, 1.0)
-
-            boundary_activity = df[f"boundary_activity_score_{window}"].clip(0.0, 1.0)
-
-
-
-            df[candidate_col] = (0.30 * inefficiency + 0.25 * flatness + 0.20 * rotation + 0.15 * two_sided + 0.10 * boundary_activity).clip(0.0,
-                                                                                                                                             1.0)
+        features: dict[str, pd.Series] = {}
 
         
-        return df
+        for window in sorted(self.config.windows):
+    
+            required_cols = [
+                f"directional_efficiency_{window}",
+                f"flatness_score_{window}",
+                f"rotation_score_{window}",
+                f"two_sided_touch_score_{window}",
+                f"boundary_activity_score_{window}",
+            ]
+    
+            
+            candidate_col = f"range_behavior_candidate_{window}"
+    
+            if any(col not in df.columns for col in required_cols):
+    
+                features[candidate_col] = pd.Series(np.nan, index=df.index)
+    
+                continue
+    
+            inefficiency = 1.0 - df[f"directional_efficiency_{window}"].clip(0.0, 1.0)
+    
+            flatness = df[f"flatness_score_{window}"].clip(0.0, 1.0)
+    
+            rotation = df[f"rotation_score_{window}"].clip(0.0, 1.0)
+    
+            two_sided = df[f"two_sided_touch_score_{window}"].clip(0.0, 1.0)
+    
+            boundary_activity = df[f"boundary_activity_score_{window}"].clip(0.0, 1.0)
+    
+            features[candidate_col] = (
+                0.30 * inefficiency
+                + 0.25 * flatness
+                + 0.20 * rotation
+                + 0.15 * two_sided
+                + 0.10 * boundary_activity
+            ).clip(0.0, 1.0)
+
+        
+        return pd.DataFrame(features, index=df.index)
 
 
 
 
-    def _add_multi_window_comparison_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _build_multi_window_comparison_features(self, df: pd.DataFrame) -> pd.DataFrame:
 
         """
         Adds relationships between short, medium, and long behavior windows.
@@ -992,41 +1031,38 @@ class RangeFeatureExtractor:
 
         windows = sorted(self.config.windows)
 
-
         if len(windows) < 2:
 
-            return df
+            return pd.DataFrame(index=df.index)
 
+        
+        features: dict[str, pd.Series] = {}
 
-        #Compute candidate scores once per window. Avoid repeated calculations inside each pair comparison.
+        comparison_features = [
 
-        df = self._add_range_behavior_candidates(df)
+            "range_width_atr",
+            "directional_efficiency",
+            "mid_cross_frequency",
+            "touch_balance",
+            "rotation_score",
+            "flatness_score",
+            "two_sided_touch_score",
+            "boundary_activity_score",
+            "range_behavior_candidate",
+            "abs_robust_trendline_move_atr",
+            "one_sided_position_pressure",
+            "atr_compression_ratio",
+        ]
 
-        comparison_features = ["range_width_atr",
-                           "directional_efficiency",
-                           "mid_cross_frequency",
-                           "touch_balance",
-                           "rotation_score",
-                           "flatness_score",
-                           "two_sided_touch_score",
-                           "boundary_activity_score",
-                           "range_behavior_candidate",
-                           "abs_robust_trendline_move_atr",
-                           "one_sided_position_pressure",
-                           "atr_compression_ratio"]
+        component_features = [
+            "directional_efficiency",
+            "flatness_score",
+            "rotation_score",
+            "two_sided_touch_score",
+            "boundary_activity_score"]
 
-        component_features = ["directional_efficiency",
-                          "flatness_score",
-                          "rotation_score",
-                          "two_sided_touch_score",
-                          "boundary_activity_score"]
-
-
+        
         for short, long in zip(windows[:-1], windows[1:]):
-
-            # ------------------------------------------------------------
-            # Ratios and differences
-            # --------------------------------------------------------------
 
             for feature in comparison_features:
 
@@ -1034,70 +1070,71 @@ class RangeFeatureExtractor:
                 long_col = f"{feature}_{long}"
                 ratio_col = f"{feature}_ratio_{short}_{long}"
                 diff_col = f"{feature}_diff_{short}_{long}"
-        
-                self._safe_ratio(df,
-                             numerator=short_col,
-                             denominator=long_col,
-                             output=ratio_col,
-                             clip=10.0)
 
-                self._safe_diff(df, left=short_col, right=long_col, output=diff_col)
+                
+                features[ratio_col] = self._make_safe_ratio(
+                    df,
+                    numerator=short_col,
+                    denominator=long_col,
+                    clip=10.0,
+                )
 
-            # --------------------------------------------------------------
-            # Position alignment
-            # --------------------------------------------------------------
+                
+                features[diff_col] = self._make_safe_diff(
+                    df,
+                    left=short_col,
+                    right=long_col,
+                )
 
             short_pos_col = f"position_in_range_{short}"
             long_pos_col = f"position_in_range_{long}"
             pos_diff_col = f"position_in_range_diff_{short}_{long}"
             pos_alignment_col = f"position_alignment_{short}_{long}"
 
-
+            
             if short_pos_col in df.columns and long_pos_col in df.columns:
 
-                df[pos_diff_col] = df[short_pos_col] - df[long_pos_col]
-                
-                '''
-                Both position values are clipped 0-1 elsewhere, so abs diff is 0-1.
-                Higher alignment means short and long windows place price similarly.
-                '''
-                
-                df[pos_alignment_col] = (1.0 - df[pos_diff_col].abs()).clip(0.0, 1.0)
+                pos_diff = df[short_pos_col] - df[long_pos_col]
 
+                pos_alignment = (1.0 - pos_diff.abs()).clip(0.0, 1.0)
+
+            
             else:
 
-                df[pos_diff_col] = np.nan
-                df[pos_alignment_col] = np.nan
+                pos_diff = pd.Series(np.nan, index=df.index)
 
+                pos_alignment = pd.Series(np.nan, index=df.index)
 
-            # --------------------------------------------------------------
-            # Component-level range agreement
-            # --------------------------------------------------------------
+            
+            features[pos_diff_col] = pos_diff
+
+            features[pos_alignment_col] = pos_alignment
 
             agreement_components = []
 
-            component_agreement_col = f"range_component_agreement_{short}_{long}"
+            
+            for component in component_features:
 
-            for feature in component_features:
+                short_col = f"{component}_{short}"
 
-                short_col = f"{feature}_{short}"
-                long_col = f"{feature}_{long}"
+                long_col = f"{component}_{long}"
 
                 if short_col not in df.columns or long_col not in df.columns:
 
                     continue
 
                 
-                if feature == "directional_efficiency":
-
-                    #For range agreement, low efficiency is the range-like trait
+                if component == "directional_efficiency":
 
                     short_component = 1.0 - df[short_col].clip(0.0, 1.0)
+
                     long_component = 1.0 - df[long_col].clip(0.0, 1.0)
 
+                
                 else:
 
                     short_component = df[short_col].clip(0.0, 1.0)
+
                     long_component = df[long_col].clip(0.0, 1.0)
 
                 component_agreement = (1.0 - (short_component - long_component).abs()).clip(0.0, 1.0)
@@ -1105,51 +1142,40 @@ class RangeFeatureExtractor:
                 agreement_components.append(component_agreement)
 
             
+            component_agreement_col = f"range_component_agreement_{short}_{long}"
+
             if agreement_components:
 
-                df[component_agreement_col] = pd.concat(agreement_components, axis=1).mean(axis=1)
+                component_agreement = pd.concat( agreement_components, axis=1).mean(axis=1)
 
             else:
 
-                df[component_agreement_col] = np.nan
+                component_agreement = pd.Series(np.nan, index=df.index)
 
-
-            # --------------------------------------------------------------
-            # Candidate-level agreement
-            # -------------------------------------------------------------
+            
+            features[component_agreement_col] = component_agreement
 
             candidate_short_col = f"range_behavior_candidate_{short}"
-
             candidate_long_col = f"range_behavior_candidate_{long}"
-
             candidate_agreement_col = f"range_candidate_agreement_{short}_{long}"
 
+            
             if candidate_short_col in df.columns and candidate_long_col in df.columns:
 
-                df[candidate_agreement_col] = (1.0 - ( df[candidate_short_col] - df[candidate_long_col]).abs()).clip(0.0, 1.0)
+                candidate_agreement = ( 1.0 - (df[candidate_short_col] - df[candidate_long_col]).abs()).clip(0.0, 1.0)
 
             else:
 
-                df[candidate_agreement_col] = np.nan
+                candidate_agreement = pd.Series(np.nan, index=df.index)
 
-            # --------------------------------------------------------------
-            # Final range agreement
-            # --------------------------------------------------------------
+            
+            features[candidate_agreement_col] = candidate_agreement
 
-            '''
-            this is a descriptive feature, not the final classifier output.
-            it tells the model whether short and long windows are telling
-            a similar range-behavior story.
-            '''
+            features[f"range_agreement_{short}_{long}"] = pd.concat(
+                [component_agreement, candidate_agreement, pos_alignment], axis=1).mean(axis=1)
 
-            df[f"range_agreement_{short}_{long}"] = pd.concat([df[component_agreement_col],
-                                                               df[candidate_agreement_col],
-                                                               df[pos_alignment_col]],
-                                                              axis=1).mean(axis=1)
-
-
-
-        return df
+        
+        return pd.DataFrame(features, index=df.index)
 
 
         
@@ -1206,6 +1232,3 @@ class RangeFeatureExtractor:
     def _is_zscore_column(self, col: str) -> bool:
 
         return any(col.endswith(f"_z{z_window}") for z_window in self.config.zscore_windows)
-
-
-        
