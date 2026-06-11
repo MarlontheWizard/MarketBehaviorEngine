@@ -71,6 +71,17 @@ class RangeFeatureConfig:
     zscore_clip: float = 5.0
     
     min_periods_ratio: float = 0.8
+
+    #Thresholds set for handling abnormalities in a range
+    quantile_low: float = 0.05
+    quantile_high: float = 0.95
+
+    #Improves decision-making consistency/stability
+    persistence_thresholds: tuple[float, ...] = (0.6, 0.7)
+
+    abnormal_volume_zscore_threshold: float = 2.0
+
+    abnormal_range_zscore_threshold: float = 2.0
     
     eps: float = 1e-12
 
@@ -193,16 +204,21 @@ class RangeFeatureExtractor:
 
         
         # ------------------------------------------------------------ 
-        # Stage 2: per-window base features
+        # per-window base features
         # ------------------------------------------------------------
     
-    
+
+        #Cannot concatenate everything at once since some features rely on others
         for window in self.config.windows:
-    
-            geometry = self._build_range_geometry_features(data, window)
-    
+
+            #Geometry features
+            geometry = self._build_range_geometry_features(data, window)    
             data = pd.concat([data, geometry], axis=1)
-    
+
+            quantile_geometry = self._build_quantile_range_geometry_features(data, window)  
+            data = pd.concat([data, robust_geometry], axis=1)
+
+            #Base features
             boundary = self._build_boundary_touch_features(data, window)
     
             rotation = self._build_rotation_features(data, window)
@@ -214,7 +230,8 @@ class RangeFeatureExtractor:
             base_features = pd.concat( [directional, boundary, rotation, slope], axis=1)
     
             data = pd.concat([data, base_features], axis=1)
-    
+
+            #Lifecycle features
             lifecycle = self._build_lifecycle_features(data, window)
     
             data = pd.concat([data, lifecycle], axis=1)
@@ -225,27 +242,33 @@ class RangeFeatureExtractor:
         # ------------------------------------------------------------
     
         atr_context = self._build_atr_context_features(data)
-
         data = pd.concat([data, atr_context], axis=1)
         
         range_candidates = self._build_range_behavior_candidates(data)
-
-        
         data = pd.concat([data, range_candidates], axis=1)
+
+        persistence = self._build_persistence_features(data)
+        data = pd.concat([data, persistence], axis=1)
+
+        acceleration = self._build_acceleration_features(data)
+        data = pd.concat([data, acceleration], axis=1)
         
         multi_window = self._build_multi_window_comparison_features(data)
-
-        
         data = pd.concat([data, multi_window], axis=1)
 
+        volume_context = self._build_volume_context_features(data)
+        data = pd.concat([data, volume_context], axis=1)
+
+        calendar_context = self._build_calendar_context_features(data)
+        data = pd.concat([data, calendar_context], axis=1)
         
         # ------------------------------------------------------------
         # rolling z-scores
         # ------------------------------------------------------------
     
         zscores = self._build_rolling_zscores(data)
-    
         data = pd.concat([data, zscores], axis=1)
+
 
         
         data = data.copy()
