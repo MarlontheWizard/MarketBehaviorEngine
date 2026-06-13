@@ -79,9 +79,11 @@ class RangeFeatureConfig:
     #Improves decision-making consistency/stability
     persistence_thresholds: tuple[float, ...] = (0.6, 0.7)
 
-    abnormal_volume_zscore_threshold: float = 2.0
+    #abnormal_volume_zscore_threshold: float = 2.0 Unused for now
 
-    abnormal_range_zscore_threshold: float = 2.0
+    #abnormal_range_zscore_threshold: float = 2.0 Unused for now
+
+    time_context_timezone: str = "UTC"
     
     eps: float = 1e-12
 
@@ -199,14 +201,18 @@ class RangeFeatureExtractor:
         # ------------------------------------------------------------
     
         atr_features = self._build_atr_features(data)
-    
         data = pd.concat([data, atr_features], axis=1)
+
+        # ------------------------------------------------------------
+        # Candles
+        # ------------------------------------------------------------
+        candle_structure = self._build_candle_structure_features(data)
+        data = pd.concat([data, candle_structure], axis=1)
 
         
         # ------------------------------------------------------------ 
         # per-window base features
         # ------------------------------------------------------------
-    
 
         #Cannot concatenate everything at once since some features rely on others
         for window in self.config.windows:
@@ -216,7 +222,7 @@ class RangeFeatureExtractor:
             data = pd.concat([data, geometry], axis=1)
 
             quantile_geometry = self._build_quantile_range_geometry_features(data, window)  
-            data = pd.concat([data, robust_geometry], axis=1)
+            data = pd.concat([data, quantile_geometry], axis=1)
 
             #Base features
             boundary = self._build_boundary_touch_features(data, window)
@@ -226,11 +232,18 @@ class RangeFeatureExtractor:
             directional = self._build_directional_efficiency_features(data, window)
     
             slope = self._build_slope_features(data, window)
-    
-            base_features = pd.concat( [directional, boundary, rotation, slope], axis=1)
-    
+
+            breakout = self._build_breakout_reentry_features(data, window)
+
+            close_location = self._build_close_location_features(data, window)
+
+            candle_body = self._build_body_range_features(data, window)
+
+            
+            base_features = pd.concat( [directional, boundary, rotation, slope, breakout, close_location, candle_body], axis=1)
             data = pd.concat([data, base_features], axis=1)
 
+            
             #Lifecycle features
             lifecycle = self._build_lifecycle_features(data, window)
     
@@ -250,6 +263,9 @@ class RangeFeatureExtractor:
         persistence = self._build_persistence_features(data)
         data = pd.concat([data, persistence], axis=1)
 
+        post_candidate_lifecycle = self._build_post_candidate_lifecycle_features(data)
+        data = pd.concat([data, post_candidate_lifecycle], axis=1)
+        
         acceleration = self._build_acceleration_features(data)
         data = pd.concat([data, acceleration], axis=1)
         
@@ -259,8 +275,8 @@ class RangeFeatureExtractor:
         volume_context = self._build_volume_context_features(data)
         data = pd.concat([data, volume_context], axis=1)
 
-        calendar_context = self._build_calendar_context_features(data)
-        data = pd.concat([data, calendar_context], axis=1)
+        time_context = self._build_time_context_features(data)
+        data = pd.concat([data, time_context], axis=1)
         
         # ------------------------------------------------------------
         # rolling z-scores
@@ -290,31 +306,84 @@ class RangeFeatureExtractor:
         Avoids raw prices, timestamps, boolean zone flags, and already-zscored columns.
         """
     
-        include_keywords = ["range_width_atr_",
-                            "directional_efficiency_",
-                            "mid_cross_frequency_",
-                            "rotation_score_",
-                            "touch_balance_",
-                            "two_sided_touch_score_",
-                            "boundary_activity_score_",
-                            "abs_robust_trendline_move_atr_",
-                            "flatness_score_",
-                            "atr_compression_ratio_",
-                            "one_sided_position_pressure_",
-                            "range_behavior_candidate_",
-                            "range_agreement_",
-                            "range_component_agreement_",
-                            "range_candidate_agreement_",
-                            "slope_outlier_sensitivity_"]
-    
-        exclude_keywords = ["range_high_",
-                            "range_low_",
-                            "range_mid_",
-                            "upper_zone_start_",
-                            "lower_zone_end_",
-                            "near_upper_zone_",
-                            "near_lower_zone_",
-                            "timestamp"]
+        include_keywords = [
+            "range_width_atr_",
+            "quantile_range_width_atr_",
+            "range_outlier_sensitivity_",
+            "quantile_position_in_range_",
+            "quantile_distance_from_mid_",
+        
+            "directional_efficiency_",
+            "mid_cross_frequency_",
+            "rotation_score_",
+            "touch_balance_",
+            "two_sided_touch_score_",
+            "boundary_activity_score_",
+        
+            "abs_robust_trendline_move_atr_",
+            "flatness_score_",
+            "slope_outlier_sensitivity_",
+        
+            "failed_break_frequency_",
+            "close_outside_frequency_",
+            "upper_break_distance_atr_",
+            "lower_break_distance_atr_",
+        
+            "avg_close_location_",
+            "close_location_std_",
+            "upper_close_frequency_",
+            "lower_close_frequency_",
+            "middle_close_frequency_",
+            "close_location_imbalance_",
+        
+            "avg_body_to_range_ratio_",
+            "body_to_range_ratio_std_",
+            "large_body_frequency_",
+            "small_body_frequency_",
+            "avg_candle_range_atr_",
+            "avg_body_size_atr_",
+            "directional_body_pressure_",
+            "bullish_candle_frequency_",
+            "bearish_candle_frequency_",
+            "avg_upper_wick_ratio_",
+            "avg_lower_wick_ratio_",
+            "avg_wick_imbalance_",
+        
+            "atr_compression_ratio_",
+            "one_sided_position_pressure_",
+            "range_behavior_candidate_",
+            "range_candidate_persistence_",
+            "compression_persistence_",
+            "one_sided_pressure_persistence_",
+        
+            "range_agreement_",
+            "range_component_agreement_",
+            "range_candidate_agreement_",
+        
+            "volume_ratio_",
+            "volume_zscore_",
+            "volume_near_upper_share_",
+            "volume_near_lower_share_",
+            "volume_boundary_imbalance_",
+        
+            "_acceleration_"
+        ]
+
+        
+        exclude_keywords = [
+            "range_high_",
+            "range_low_",
+            "range_mid_",
+            "quantile_range_high_",
+            "quantile_range_low_",
+            "quantile_range_mid_",
+            "upper_zone_start_",
+            "lower_zone_end_",
+            "near_upper_zone_",
+            "near_lower_zone_",
+            "timestamp",
+            "total_volume"
+        ]
     
         
         selected = []
@@ -434,6 +503,23 @@ class RangeFeatureExtractor:
 
             raise ValueError("atr_method must be 'wilder'.")
 
+        if not 0.0 < self.config.quantile_low < 0.5:
+            
+            raise ValueError("quantile_low must be between 0.0 and 0.5.")
+
+        if not 0.5 < self.config.quantile_high < 1.0:
+        
+            raise ValueError("quantile_high must be between 0.5 and 1.0.")
+
+        if self.config.quantile_low >= self.config.quantile_high:
+            
+            raise ValueError("quantile_low must be less than quantile_high.")
+
+        if any( threshold <= 0.0 or threshold >= 1.0 for threshold in self.config.persistence_thresholds):
+    
+            raise ValueError("persistence_thresholds must be between 0.0 and 1.0.")
+
+    
 
     # ---------------------------------------------------------------------
     #                          Slope Feature(s)
@@ -668,6 +754,78 @@ class RangeFeatureExtractor:
         }, index=df.index)
 
 
+    
+    def _build_quantile_range_geometry_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+
+        """
+        Adds quantile-based range geometry.
+
+        I want to help the rolling max/min range from being distorted by one abnormal wick.
+        Using rolling quantiles to estimate the core range could possibly help.
+
+        Features:
+
+            quantile_range_high_N
+            quantile_range_low_N
+            quantile_range_mid_N
+            quantile_range_width_N
+            quantile_range_width_atr_N
+            range_outlier_sensitivity_N
+            quantile_position_in_range_N
+            quantile_distance_to_high_atr_N
+            quantile_distance_to_low_atr_N
+
+        """
+
+        c = self.config
+
+        min_periods = self._min_periods(window)
+
+        atr_col = f"atr_{c.atr_window}"
+
+        
+        quantile_high = ( df["high"].rolling(window, min_periods=min_periods).quantile(c.quantile_high))
+        quantile_low = ( df["low"].rolling(window, min_periods=min_periods).quantile(c.quantile_low))
+
+        
+        quantile_mid = (quantile_high + quantile_low) / 2.0
+        quantile_width = quantile_high - quantile_low
+        quantile_width_atr = quantile_width / (df[atr_col] + c.eps)
+
+        standard_width_atr_col = f"range_width_atr_{window}"
+
+        if standard_width_atr_col in df.columns:
+
+            range_outlier_sensitivity = ( df[standard_width_atr_col] - quantile_width_atr).clip(lower=0.0)
+
+        
+        else:
+
+            range_outlier_sensitivity = pd.Series(np.nan, index=df.index)
+
+        
+        quantile_position = ( (df["close"] - quantile_low) / (quantile_width + c.eps)).clip(lower=0.0, upper=1.0)
+
+        
+        quantile_distance_to_high = quantile_high - df["close"]
+        quantile_distance_to_low = df["close"] - quantile_low
+
+        
+        return pd.DataFrame(
+            {
+                f"quantile_range_high_{window}": quantile_high,
+                f"quantile_range_low_{window}": quantile_low,
+                f"quantile_range_mid_{window}": quantile_mid,
+                f"quantile_range_width_{window}": quantile_width,
+                f"quantile_range_width_atr_{window}": quantile_width_atr,
+                f"range_outlier_sensitivity_{window}": range_outlier_sensitivity,
+                f"quantile_position_in_range_{window}": quantile_position,
+                f"quantile_distance_to_high_atr_{window}": ( quantile_distance_to_high / (df[atr_col] + c.eps)),
+                f"quantile_distance_to_low_atr_{window}": ( quantile_distance_to_low / (df[atr_col] + c.eps)),
+                f"quantile_distance_from_mid_{window}": ( (df["close"] - quantile_mid).abs() / (quantile_width + c.eps)),
+            }, index=df.index)
+
+        
     # ---------------------------------------------------------------------
     #                              Directional
     # ---------------------------------------------------------------------
@@ -720,7 +878,182 @@ class RangeFeatureExtractor:
                 f"rotation_score_{window}": rotation_score,
             }, index=df.index)
 
+
+
     
+    def _build_close_location_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+
+        """
+        Describes where candles close inside their own high-low range and inside the rolling market range.
+        """
+
+        c = self.config
+
+        min_periods = self._min_periods(window)
+
+        candle_range = df["high"] - df["low"]
+
+        close_location_value = ((df["close"] - df["low"]) / (candle_range + c.eps)).clip(lower=0.0, upper=1.0)
+
+        
+        upper_close = (close_location_value >= 1.0 - c.zone_pct).astype(float)
+        lower_close = (close_location_value <= c.zone_pct).astype(float)
+        middle_close = ((close_location_value > c.zone_pct)& (close_location_value < 1.0 - c.zone_pct)).astype(float)
+
+        avg_close_location = close_location_value.rolling(window,min_periods=min_periods).mean()
+
+        close_location_std = close_location_value.rolling(window, min_periods=min_periods).std(ddof=0)
+
+        upper_close_frequency = upper_close.rolling(window, min_periods=min_periods).mean()
+        lower_close_frequency = lower_close.rolling(window, min_periods=min_periods).mean()
+        middle_close_frequency = middle_close.rolling(window, min_periods=min_periods).mean()
+
+        close_location_imbalance = (upper_close_frequency - lower_close_frequency)
+
+        return pd.DataFrame(
+            {
+                f"close_location_value_{window}": close_location_value,
+                f"avg_close_location_{window}": avg_close_location,
+                f"close_location_std_{window}": close_location_std,
+                f"upper_close_frequency_{window}": upper_close_frequency,
+                f"lower_close_frequency_{window}": lower_close_frequency,
+                f"middle_close_frequency_{window}": middle_close_frequency,
+                f"close_location_imbalance_{window}": close_location_imbalance,
+
+            }, index=df.index)
+
+    def _build_candle_structure_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        
+        """
+        Adds candle-level body/range structure to describe the current candle itself.
+        They are not rolling-window features, so they are only created once.
+        """
+    
+        c = self.config
+        atr_col = f"atr_{c.atr_window}"
+    
+        candle_range = df["high"] - df["low"]
+        body_size = (df["close"] - df["open"]).abs()
+    
+        body_to_range_ratio = ( body_size / (candle_range + c.eps)).clip(lower=0.0, upper=1.0)
+    
+        candle_range_atr = candle_range / (df[atr_col] + c.eps)
+        body_size_atr = body_size / (df[atr_col] + c.eps)
+    
+        candle_direction = np.sign(df["close"] - df["open"])
+    
+        upper_wick = df["high"] - pd.concat([df["open"], df["close"]], axis=1).max(axis=1)
+        lower_wick = pd.concat([df["open"], df["close"]], axis=1).min(axis=1) - df["low"]
+    
+        upper_wick_ratio = (upper_wick / (candle_range + c.eps) ).clip(lower=0.0, upper=1.0)
+        lower_wick_ratio = (lower_wick / (candle_range + c.eps)).clip(lower=0.0, upper=1.0)
+
+        
+        wick_imbalance = upper_wick_ratio - lower_wick_ratio
+
+        
+        return pd.DataFrame(
+            {
+                "candle_range": candle_range,
+                "body_size": body_size,
+                "body_to_range_ratio": body_to_range_ratio,
+                "candle_range_atr": candle_range_atr,
+                "body_size_atr": body_size_atr,
+                "candle_direction": candle_direction,
+                "upper_wick_ratio": upper_wick_ratio,
+                "lower_wick_ratio": lower_wick_ratio,
+                "wick_imbalance": wick_imbalance,
+            }, index=df.index)
+
+
+
+    def _build_body_range_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+        
+        """
+        Adds rolling candle body/range behavior.
+    
+        These features summarize candle structure over the current rolling window.
+        The raw candle-level features are created separately in
+        _build_candle_structure_features().
+        """
+    
+        min_periods = self._min_periods(window)
+    
+        required_cols = [
+            "body_to_range_ratio",
+            "candle_range_atr",
+            "body_size_atr",
+            "candle_direction",
+            "upper_wick_ratio",
+            "lower_wick_ratio",
+            "wick_imbalance"]
+
+        
+        missing = [col for col in required_cols if col not in df.columns]
+
+        
+        if missing:
+            
+            raise ValueError(f"Missing candle structure columns before body/range rolling features: {missing}. "
+                "Call _build_candle_structure_features() first."
+            )
+
+        
+        body_to_range_ratio = df["body_to_range_ratio"]
+        candle_range_atr = df["candle_range_atr"]
+        body_size_atr = df["body_size_atr"]
+        candle_direction = df["candle_direction"]
+        upper_wick_ratio = df["upper_wick_ratio"]
+        lower_wick_ratio = df["lower_wick_ratio"]
+        wick_imbalance = df["wick_imbalance"]
+    
+        large_body = (body_to_range_ratio >= 0.7).astype(float)
+        small_body = (body_to_range_ratio <= 0.3).astype(float)
+    
+        bullish_candle = (candle_direction > 0).astype(float)
+        bearish_candle = (candle_direction < 0).astype(float)
+    
+        avg_body_to_range = body_to_range_ratio.rolling( window, min_periods=min_periods).mean()
+    
+        body_to_range_std = body_to_range_ratio.rolling(window, min_periods=min_periods).std(ddof=0)
+    
+        large_body_frequency = large_body.rolling(window,min_periods=min_periods).mean()
+    
+        small_body_frequency = small_body.rolling(window, min_periods=min_periods).mean()
+    
+        avg_candle_range_atr = candle_range_atr.rolling(window, min_periods=min_periods).mean()
+    
+        avg_body_size_atr = body_size_atr.rolling( window, min_periods=min_periods).mean()
+    
+        directional_body_pressure = (candle_direction * body_to_range_ratio).rolling(window, min_periods=min_periods).mean()
+    
+        bullish_candle_frequency = bullish_candle.rolling(window, min_periods=min_periods).mean()
+    
+        bearish_candle_frequency = bearish_candle.rolling(window, min_periods=min_periods).mean()
+    
+        avg_upper_wick_ratio = upper_wick_ratio.rolling(window,min_periods=min_periods).mean()
+    
+        avg_lower_wick_ratio = lower_wick_ratio.rolling(window, min_periods=min_periods).mean()
+    
+        avg_wick_imbalance = wick_imbalance.rolling(window, min_periods=min_periods).mean()
+    
+        return pd.DataFrame(
+            {
+                f"avg_body_to_range_ratio_{window}": avg_body_to_range,
+                f"body_to_range_ratio_std_{window}": body_to_range_std,
+                f"large_body_frequency_{window}": large_body_frequency,
+                f"small_body_frequency_{window}": small_body_frequency,
+                f"avg_candle_range_atr_{window}": avg_candle_range_atr,
+                f"avg_body_size_atr_{window}": avg_body_size_atr,
+                f"directional_body_pressure_{window}": directional_body_pressure,
+                f"bullish_candle_frequency_{window}": bullish_candle_frequency,
+                f"bearish_candle_frequency_{window}": bearish_candle_frequency,
+                f"avg_upper_wick_ratio_{window}": avg_upper_wick_ratio,
+                f"avg_lower_wick_ratio_{window}": avg_lower_wick_ratio,
+                f"avg_wick_imbalance_{window}": avg_wick_imbalance,
+            }, index=df.index)
+        
+        
     # ---------------------------------------------------------------------
     #                              Lifecycle
     # ---------------------------------------------------------------------
@@ -747,6 +1080,8 @@ class RangeFeatureExtractor:
         
         lifecycle_base_cols = [
             f"range_width_atr_{window}",
+            f"quantile_range_width_atr_{window}",
+            f"range_outlier_sensitivity_{window}",
             f"directional_efficiency_{window}",
             f"touch_balance_{window}",
             f"mid_cross_frequency_{window}",
@@ -754,7 +1089,21 @@ class RangeFeatureExtractor:
             f"two_sided_touch_score_{window}",
             f"rotation_score_{window}",
             f"flatness_score_{window}",
-            f"position_in_range_{window}"]
+            f"position_in_range_{window}",
+            f"failed_break_frequency_{window}",
+            f"close_outside_frequency_{window}",
+            f"avg_close_location_{window}",
+            f"close_location_imbalance_{window}",
+            f"avg_body_to_range_ratio_{window}",
+            f"large_body_frequency_{window}",
+            f"small_body_frequency_{window}",
+            f"directional_body_pressure_{window}",
+            f"bullish_candle_frequency_{window}",
+            f"bearish_candle_frequency_{window}",
+            f"avg_upper_wick_ratio_{window}",
+            f"avg_lower_wick_ratio_{window}",
+            f"avg_wick_imbalance_{window}"
+        ]
         
 
         for col in lifecycle_base_cols:
@@ -822,6 +1171,64 @@ class RangeFeatureExtractor:
 
         return pd.DataFrame(features, index=df.index)
 
+
+    def _build_acceleration_features(self, df: pd.DataFrame) -> pd.DataFrame:
+
+        """
+        Adds second-order change features.
+        If slope tells us a behavior is changing, acceleration tells us whether that change is speeding up or slowing down.
+        """
+
+        sw = self.config.slope_window
+
+        features: dict[str, pd.Series] = {}
+
+        acceleration_base_names = [
+            "range_width_atr",
+            "quantile_range_width_atr",
+            "range_outlier_sensitivity",
+            "directional_efficiency",
+            "touch_balance",
+            "mid_cross_frequency",
+            "boundary_activity_score",
+            "two_sided_touch_score",
+            "rotation_score",
+            "flatness_score",
+            "position_in_range",
+            "failed_break_frequency",
+            "close_outside_frequency",
+            "avg_close_location",
+            "close_location_imbalance",
+            "avg_body_to_range_ratio",
+            "large_body_frequency",
+            "small_body_frequency",
+            "directional_body_pressure",
+            "bullish_candle_frequency",
+            "bearish_candle_frequency",
+            "avg_upper_wick_ratio",
+            "avg_lower_wick_ratio",
+            "avg_wick_imbalance"
+        ]
+
+
+        
+        for window in sorted(self.config.windows):
+
+            for base_name in acceleration_base_names:
+
+                slope_col = f"{base_name}_{window}_slope_{sw}"
+
+                if slope_col not in df.columns:
+
+                    continue
+
+                acceleration_col = f"{base_name}_{window}_acceleration_{sw}"
+
+                features[acceleration_col] = df[slope_col] - df[slope_col].shift(sw)
+
+        
+        return pd.DataFrame(features, index=df.index)
+
         
     # ---------------------------------------------------------------------
     #                              Boundaries
@@ -868,7 +1275,190 @@ class RangeFeatureExtractor:
             }, index=df.index)
 
 
+    def _build_breakout_reentry_features(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
 
+        """
+        Describes range violations and failed breaks.
+        Attempts to describe whether the current candle interacted with or violated the rolling range boundaries.
+
+        Uses prior range boundaries via shift(1) so the current candle does not define the boundary it is being tested against.
+
+        The goal is to account for clean range, range with sweeps, failed breakout, actual boundary violation, and transition behavior.
+        """
+
+        c = self.config
+
+        atr_col = f"atr_{c.atr_window}"
+
+        high_boundary = df[f"range_high_{window}"].shift(1)
+        low_boundary = df[f"range_low_{window}"].shift(1)
+
+        if f"quantile_range_high_{window}" in df.columns:
+            
+            quantile_high_boundary = df[f"quantile_range_high_{window}"].shift(1)
+            
+        else:
+            
+            quantile_high_boundary = high_boundary
+        
+        if f"quantile_range_low_{window}" in df.columns:
+            
+            quantile_low_boundary = df[f"quantile_range_low_{window}"].shift(1)
+        
+        else:
+            
+            quantile_low_boundary = low_boundary
+
+        high_break = (df["high"] > high_boundary).astype(float)
+        low_break = (df["low"] < low_boundary).astype(float)
+
+        close_above = (df["close"] > high_boundary).astype(float)
+        close_below = (df["close"] < low_boundary).astype(float)
+
+        failed_break_upper = ((df["high"] > high_boundary) & (df["close"] <= high_boundary)).astype(float)
+        failed_break_lower = ((df["low"] < low_boundary) & (df["close"] >= low_boundary)).astype(float)
+
+        quantile_high_break = (df["high"] > quantile_high_boundary).astype(float)
+        quantile_low_break = (df["low"] < quantile_low_boundary).astype(float)
+
+        upper_break_distance_atr = ( (df["high"] - high_boundary).clip(lower=0.0)/ (df[atr_col] + c.eps))  
+        lower_break_distance_atr = ((low_boundary - df["low"]).clip(lower=0.0) / (df[atr_col] + c.eps))
+
+        close_outside_range = ( (df["close"] > high_boundary) | (df["close"] < low_boundary)).astype(float)
+
+        wick_break_no_close_outside = (((df["high"] > high_boundary) | (df["low"] < low_boundary)) & (close_outside_range == 0)).astype(float)
+
+        min_periods = self._min_periods(window)
+
+        failed_break_frequency = ((failed_break_upper + failed_break_lower).rolling(window, min_periods=min_periods).sum()/ window)
+
+        
+        close_outside_frequency = (close_outside_range.rolling(window, min_periods=min_periods).sum() / window)
+
+        
+        return pd.DataFrame(
+            
+            {
+                f"high_break_above_range_{window}": high_break,
+                f"low_break_below_range_{window}": low_break,
+                f"close_above_range_{window}": close_above,
+                f"close_below_range_{window}": close_below,
+                f"failed_break_upper_{window}": failed_break_upper,
+                f"failed_break_lower_{window}": failed_break_lower,
+                f"quantile_high_break_{window}": quantile_high_break,
+                f"quantile_low_break_{window}": quantile_low_break,
+                f"upper_break_distance_atr_{window}": upper_break_distance_atr,
+                f"lower_break_distance_atr_{window}": lower_break_distance_atr,
+                f"close_outside_range_{window}": close_outside_range,
+                f"wick_break_no_close_outside_{window}": wick_break_no_close_outside,
+                f"failed_break_frequency_{window}": failed_break_frequency,
+                f"close_outside_frequency_{window}": close_outside_frequency,
+            
+            }, index=df.index)
+
+
+
+    def _build_time_context_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        
+        """
+        Adds calendar and trading-session context.
+    
+        For daily data:
+            Calendar features are useful.
+            Session features might be not as meaningful.
+    
+        For intraday data:
+            Session features help describe market behavior differences across
+            Asian, London, New York, overlap, and rollover periods.
+    
+        Assumes timestamps are UTC (this will change once integrating in broker)
+        """
+        
+        timezone = self.config.time_context_timezone
+        
+        timestamp = pd.to_datetime(df["timestamp"])
+    
+        if timestamp.dt.tz is None:
+            
+            timestamp = timestamp.dt.tz_localize(timezone)
+            
+        else:
+            timestamp = timestamp.dt.tz_convert(timezone)
+    
+        time_hour = timestamp.dt.hour
+        day_of_week = timestamp.dt.dayofweek
+        month = timestamp.dt.month
+    
+        # ------------------------------------------------------------
+        # Calendar context
+        # ------------------------------------------------------------
+    
+        is_monday = (day_of_week == 0).astype(float)
+        is_friday = (day_of_week == 4).astype(float)
+        is_weekend = (day_of_week >= 5).astype(float)
+    
+        is_month_start = timestamp.dt.is_month_start.astype(float)
+        is_month_end = timestamp.dt.is_month_end.astype(float)
+    
+        is_new_year = ( (timestamp.dt.month == 1) & (timestamp.dt.day == 1)).astype(float)
+    
+        is_christmas = ((timestamp.dt.month == 12) & (timestamp.dt.day == 25)).astype(float)
+    
+        # ------------------------------------------------------------
+        # forex session time approximations
+        # ------------------------------------------------------------
+        # approximate and intentionally simple.
+    
+    
+        is_asian_session = ( (time_hour >= 0) & (time_hour < 7)).astype(float)
+    
+        is_london_session = ( (time_hour >= 7) & (time_hour < 16)).astype(float)
+        is_new_york_session = ( (time_hour >= 12) & (time_hour < 21) ).astype(float)
+        is_london_ny_overlap = ( (time_hour >= 12) & (time_hour < 16)).astype(float)
+    
+        
+        #21:00–23:00 can be weird 
+        is_rollover_window = ((time_hour >= 21) & (time_hour < 23) ).astype(float)
+    
+        
+        is_asian_london_transition = ( (time_hour >= 6) & (time_hour < 8)).astype(float)
+        is_london_ny_transition = ( (time_hour >= 11) & (time_hour < 13)).astype(float)
+    
+        
+        #cyclical time encoding 
+        hour_sin = np.sin(2.0 * np.pi * time_hour / 24.0)
+        hour_cos = np.cos(2.0 * np.pi * time_hour / 24.0)
+    
+        day_sin = np.sin(2.0 * np.pi * day_of_week / 7.0)
+        day_cos = np.cos(2.0 * np.pi * day_of_week / 7.0)
+    
+        
+        return pd.DataFrame(
+            {
+                "time_hour": time_hour.astype(float),
+                "day_of_week": day_of_week.astype(float),
+                "month": month.astype(float),
+    
+                "hour_sin": hour_sin,
+                "hour_cos": hour_cos,
+                "day_sin": day_sin,
+                "day_cos": day_cos,
+    
+                "is_monday": is_monday,
+                "is_friday": is_friday,
+                "is_weekend": is_weekend,
+                "is_month_start": is_month_start,
+                "is_month_end": is_month_end,
+                "is_new_year": is_new_year,
+                "is_christmas": is_christmas,
+    
+                "is_asian_session": is_asian_session,
+                "is_london_session": is_london_session,
+                "is_new_york_session": is_new_york_session,
+                "is_london_ny_overlap": is_london_ny_overlap,
+                "is_rollover_window": is_rollover_window,
+                "is_asian_london_transition": is_asian_london_transition,
+                "is_london_ny_transition": is_london_ny_transition}, index=df.index)
 
     # ---------------------------------------------------------------------
     #                           Window Comaparison
@@ -1029,8 +1619,128 @@ class RangeFeatureExtractor:
         return pd.DataFrame(features, index=df.index)
 
 
+    def _build_persistence_features(self, df: pd.DataFrame) -> pd.DataFrame:
+
+        """
+        Adds persistence/time-in-state descriptors.
+        Helps distinguish one candle that looks range-like from a sustained range-like regime.
+        """
+
+        features: dict[str, pd.Series] = {}
+
+        for window in sorted(self.config.windows):
+
+            min_periods = self._min_periods(window)
+
+            candidate_col = f"range_behavior_candidate_{window}"
+            compression_col = f"range_compression_pressure_{window}"
+            one_sided_col = f"one_sided_position_pressure_{window}"
+
+            if candidate_col in df.columns:
+
+                
+                for threshold in self.config.persistence_thresholds:
+
+                    threshold_name = str(threshold).replace(".", "_")
+
+                    features[f"range_candidate_above_{threshold_name}_frequency_{window}"] = (
+                        (df[candidate_col] >= threshold)
+                        .astype(float)
+                        .rolling(window, min_periods=min_periods)
+                        .mean())
+
+                features[f"range_candidate_persistence_{window}"] = (
+                    df[candidate_col]
+                    .rolling(window, min_periods=min_periods)
+                    .mean())
+
+            else:
+
+                features[f"range_candidate_persistence_{window}"] = pd.Series(np.nan, index=df.index)
+
+            
+            if compression_col in df.columns:
+
+                features[f"compression_persistence_{window}"] = (
+                    (df[compression_col] > 0)
+                    .astype(float)
+                    .rolling(window, min_periods=min_periods)
+                    .mean())
+
+            else:
+
+                features[f"compression_persistence_{window}"] = pd.Series(np.nan, index=df.index)
 
 
+            
+            if one_sided_col in df.columns:
+
+                features[f"one_sided_pressure_persistence_{window}"] = (
+                    df[one_sided_col]
+                    .rolling(window, min_periods=min_periods)
+                    .mean())
+
+            else:
+
+                features[f"one_sided_pressure_persistence_{window}"] = pd.Series(
+                    np.nan,
+                    index=df.index)
+
+        
+        return pd.DataFrame(features, index=df.index)
+
+
+    def _build_post_candidate_lifecycle_features(self, df: pd.DataFrame) -> pd.DataFrame:
+
+        """
+        Adds lifecycle/change/acceleration features for post-base context columns.
+        These columns get created after the normal per window lifecycle step, so they need their own lifecycle method.
+    
+        Examples include:
+            range_behavior_candidate_N
+            atr_compression_ratio_N
+            range_candidate_persistence_N
+            compression_persistence_N
+            one_sided_pressure_persistence_N
+        """
+    
+        sw = self.config.slope_window
+    
+        features: dict[str, pd.Series] = {}
+    
+        
+        base_names = ["range_behavior_candidate",
+                      "atr_compression_ratio",
+                      "range_candidate_persistence",
+                      "compression_persistence",
+                      "one_sided_pressure_persistence"
+                     ]
+    
+        
+        for window in sorted(self.config.windows):
+    
+            for base_name in base_names:
+    
+                col = f"{base_name}_{window}"
+    
+                if col not in df.columns:
+    
+                    continue
+    
+                change_col = f"{col}_change_{sw}"
+                slope_col = f"{col}_slope_{sw}"
+                acceleration_col = f"{col}_acceleration_{sw}"
+    
+                features[change_col] = df[col] - df[col].shift(sw)
+                features[slope_col] = ( df[col].rolling(sw, min_periods=max(2, int(sw * 0.8))).apply(self._linear_regression_slope, raw=True))
+    
+                features[acceleration_col] = (features[slope_col] - features[slope_col].shift(sw))
+    
+        
+        return pd.DataFrame(features, index=df.index)
+
+
+        
     def _build_multi_window_comparison_features(self, df: pd.DataFrame) -> pd.DataFrame:
 
         """
@@ -1201,6 +1911,84 @@ class RangeFeatureExtractor:
         return pd.DataFrame(features, index=df.index)
 
 
+
+    def _build_volume_context_features(self, df: pd.DataFrame) -> pd.DataFrame:
+
+        """
+        Adds volume/activity context. Uses bid_volume and ask_volume when available.
+        If volume columns are missing it will return empty dataframe.
+        """
+
+        if "bid_volume" not in df.columns or "ask_volume" not in df.columns:
+
+            return pd.DataFrame(index=df.index)
+
+    
+        c = self.config
+
+        features: dict[str, pd.Series] = {}
+
+        total_volume = df["bid_volume"].astype(float) + df["ask_volume"].astype(float)
+
+        volume_imbalance = ((df["bid_volume"].astype(float) - df["ask_volume"].astype(float)) / (total_volume + c.eps))
+
+        features["total_volume"] = total_volume
+        features["volume_imbalance"] = volume_imbalance
+
+    
+        for window in sorted(self.config.windows):
+
+            min_periods = self._min_periods(window)
+
+            volume_mean = (total_volume.rolling(window, min_periods=min_periods).mean().shift(1))
+
+            volume_std = (total_volume.rolling(window, min_periods=min_periods).std(ddof=0).shift(1))
+
+            safe_mean = volume_mean.where(volume_mean.abs() > c.eps, np.nan)
+            safe_std = volume_std.where(volume_std > c.eps, np.nan)
+
+            volume_ratio = total_volume / safe_mean
+
+            volume_zscore = ((total_volume - volume_mean) / safe_std).clip(lower=-c.zscore_clip, upper=c.zscore_clip)
+
+            features[f"volume_mean_{window}"] = volume_mean
+            features[f"volume_ratio_{window}"] = volume_ratio.clip(lower=0.0, upper=10.0)
+            features[f"volume_zscore_{window}"] = volume_zscore
+
+            upper_zone_col = f"near_upper_zone_{window}"
+            lower_zone_col = f"near_lower_zone_{window}"
+
+            if upper_zone_col in df.columns:
+
+                volume_near_upper = (total_volume.where(df[upper_zone_col] == 1.0, 0.0).rolling(window, min_periods=min_periods).sum()
+
+                    / ( total_volume.rolling(window, min_periods=min_periods).sum() + c.eps))
+
+            
+            else:
+
+                volume_near_upper = pd.Series(np.nan, index=df.index)
+
+            
+            if lower_zone_col in df.columns:
+
+                volume_near_lower = (total_volume.where(df[lower_zone_col] == 1.0, 0.0).rolling(window, min_periods=min_periods).sum()
+
+                    / (total_volume.rolling(window, min_periods=min_periods).sum()+ c.eps))
+
+            
+            else:
+
+                volume_near_lower = pd.Series(np.nan, index=df.index)
+
+            
+            features[f"volume_near_upper_share_{window}"] = volume_near_upper
+            features[f"volume_near_lower_share_{window}"] = volume_near_lower
+            features[f"volume_boundary_imbalance_{window}"] = (volume_near_upper - volume_near_lower)
+
+
+    
+        return pd.DataFrame(features, index=df.index)
         
     # ---------------------------------------------------------------------
     #                            Helper Functions
@@ -1255,3 +2043,58 @@ class RangeFeatureExtractor:
     def _is_zscore_column(self, col: str) -> bool:
 
         return any(col.endswith(f"_z{z_window}") for z_window in self.config.zscore_windows)
+
+
+    def get_model_feature_columns(self, df: pd.DataFrame) -> list[str]:
+        
+        """
+        Returns model-ready feature columns. Excludes timestamps, raw OHLC, raw price boundaries, and internal/debug flags.
+        """
+
+        exclude_exact = {
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "true_range",
+            "bid_volume",
+            "ask_volume",
+            "candle_range",
+            "body_size",
+            "total_volume"
+        }
+
+        exclude_keywords = [
+            "range_high_",
+            "range_low_",
+            "range_mid_",
+            "quantile_range_high_",
+            "quantile_range_low_",
+            "quantile_range_mid_",
+            "upper_zone_start_",
+            "lower_zone_end_",
+            "near_upper_zone_",
+            "near_lower_zone_",
+            "close_slope_",
+            "robust_close_slope_",
+            "mid_cross_count_",
+            "upper_touch_count_",
+            "lower_touch_count_",
+            "total_touch_count_",
+            "weak_" #For when weak labels are implemented
+        ]
+
+        selected = []
+
+        for col in df.columns:
+            if col in exclude_exact:
+                continue
+
+            if any(keyword in col for keyword in exclude_keywords):
+                continue
+
+            if pd.api.types.is_numeric_dtype(df[col]):
+                selected.append(col)
+
+        return selected
