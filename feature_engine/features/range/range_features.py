@@ -5,6 +5,7 @@ from typing import Iterable, Optional
 
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 
 @dataclass
@@ -2098,3 +2099,51 @@ class RangeFeatureExtractor:
                 selected.append(col)
 
         return selected
+
+    def transform_and_save_training_features(self,
+                                             df: pd.DataFrame,
+                                             *,
+                                             output_dir: str | Path = "feature_data/range_training_features",
+                                             symbol: str = "EURUSD",
+                                             timeframe: str = "D1",
+                                             filename: Optional[str] = None,
+                                             overwrite: bool = False) -> pd.DataFrame:
+        
+        """
+        Runs transform(), selects only model-ready training columns,
+        saves them as Parquet, and returns the training feature dataframe.
+    
+        This does not save raw OHLC, timestamps, internal range boundaries,
+        debug/helper columns, or weak labels.
+        """
+    
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+    
+        if filename is None:
+            
+            filename = f"{symbol}_{timeframe}_range_training_features.parquet"
+    
+        feature_path = output_dir / filename
+    
+        if feature_path.exists() and not overwrite:
+            
+            raise FileExistsError(f"Training feature file already exists: {feature_path}. "
+                                  "Use overwrite=True if you want to replace it."
+                                 )
+    
+        full_features = self.transform(df)
+    
+        model_cols = self.get_model_feature_columns(full_features)
+    
+        training_features = full_features[model_cols].copy()
+    
+        training_features = training_features.replace([np.inf, -np.inf], np.nan)
+    
+        training_features.to_parquet(feature_path, index=False)
+    
+        print(f"[TRAINING FEATURE SAVE] Saved training features to: {feature_path}")
+        print(f"[TRAINING FEATURE SAVE] Full feature shape: {full_features.shape}")
+        print(f"[TRAINING FEATURE SAVE] Training feature shape: {training_features.shape}")
+    
+        return training_features
