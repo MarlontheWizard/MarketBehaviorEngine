@@ -2110,7 +2110,7 @@ class RangeFeatureExtractor:
                                              overwrite: bool = False) -> pd.DataFrame:
         
         """
-        Runs transform(), selects only model-ready training columns,
+        Runs transform(), selects both model-ready training columns and full feature set,
         saves them as Parquet, and returns the training feature dataframe.
     
         This does not save raw OHLC, timestamps, internal range boundaries,
@@ -2122,17 +2122,18 @@ class RangeFeatureExtractor:
     
         if training_filename is None:
 
-        training_filename = f"{symbol}_{timeframe}_range_training_features.parquet"
+            training_filename = f"{symbol}_{timeframe}_range_training_features.parquet"
 
-    if full_filename is None:
-
-        full_filename = f"{symbol}_{timeframe}_range_full_features.parquet"
-
-        training_feature_path = output_dir / training_filename
+        
+        if full_filename is None:
     
-        full_feature_path = output_dir / full_filename
+            full_filename = f"{symbol}_{timeframe}_range_full_features.parquet"
     
-        existing_files = [ path for path in [training_feature_path, full_feature_path] if path.exists() ]
+            training_feature_path = output_dir / training_filename
+        
+            full_feature_path = output_dir / full_filename
+        
+            existing_files = [ path for path in [training_feature_path, full_feature_path] if path.exists() ]
 
         
         if existing_files and not overwrite:
@@ -2140,7 +2141,8 @@ class RangeFeatureExtractor:
             existing_paths = "\n".join(str(path) for path in existing_files)
     
             raise FileExistsError(f"Feature file(s) already exist:\n{existing_paths}\n"
-                                   "Use overwrite=True if you want to replace them.")
+                                   "Use overwrite=True if you want to replace them."
+                                 )
 
         
         full_features = self.transform(df)
