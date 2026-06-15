@@ -2120,30 +2120,47 @@ class RangeFeatureExtractor:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
     
-        if filename is None:
-            
-            filename = f"{symbol}_{timeframe}_range_training_features.parquet"
+        if training_filename is None:
+
+        training_filename = f"{symbol}_{timeframe}_range_training_features.parquet"
+
+    if full_filename is None:
+
+        full_filename = f"{symbol}_{timeframe}_range_full_features.parquet"
+
+        training_feature_path = output_dir / training_filename
     
-        feature_path = output_dir / filename
+        full_feature_path = output_dir / full_filename
     
-        if feature_path.exists() and not overwrite:
-            
-            raise FileExistsError(f"Training feature file already exists: {feature_path}. "
-                                  "Use overwrite=True if you want to replace it."
-                                 )
+        existing_files = [ path for path in [training_feature_path, full_feature_path] if path.exists() ]
+
+        
+        if existing_files and not overwrite:
     
+            existing_paths = "\n".join(str(path) for path in existing_files)
+    
+            raise FileExistsError(f"Feature file(s) already exist:\n{existing_paths}\n"
+                                   "Use overwrite=True if you want to replace them.")
+
+        
         full_features = self.transform(df)
     
         model_cols = self.get_model_feature_columns(full_features)
     
         training_features = full_features[model_cols].copy()
     
+        full_features = full_features.replace([np.inf, -np.inf], np.nan)
+    
         training_features = training_features.replace([np.inf, -np.inf], np.nan)
     
-        training_features.to_parquet(feature_path, index=False)
+        full_features.to_parquet(full_feature_path, index=False)
     
-        print(f"[TRAINING FEATURE SAVE] Saved training features to: {feature_path}")
-        print(f"[TRAINING FEATURE SAVE] Full feature shape: {full_features.shape}")
+        training_features.to_parquet(training_feature_path, index=False)
+    
+        print(f"[FEATURE SAVE] Saved full features to: {full_feature_path}")
+        print(f"[TRAINING FEATURE SAVE] Saved training features to: {training_feature_path}")
+        print(f"[FEATURE SAVE] Full feature shape: {full_features.shape}")
         print(f"[TRAINING FEATURE SAVE] Training feature shape: {training_features.shape}")
-    
+
+        
         return training_features
