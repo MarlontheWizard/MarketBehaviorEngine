@@ -2106,7 +2106,8 @@ class RangeFeatureExtractor:
                                              output_dir: str | Path = "feature_data/range_training_features",
                                              symbol: str = "EURUSD",
                                              timeframe: str = "D1",
-                                             filename: Optional[str] = None,
+                                             training_filename: Optional[str] = None,
+                                             full_filename: Optional[str] = None,
                                              overwrite: bool = False) -> pd.DataFrame:
         
         """
@@ -2129,11 +2130,12 @@ class RangeFeatureExtractor:
     
             full_filename = f"{symbol}_{timeframe}_range_full_features.parquet"
     
-            training_feature_path = output_dir / training_filename
         
-            full_feature_path = output_dir / full_filename
+        training_feature_path = output_dir / training_filename
         
-            existing_files = [ path for path in [training_feature_path, full_feature_path] if path.exists() ]
+        full_feature_path = output_dir / full_filename
+        
+        existing_files = [ path for path in [training_feature_path, full_feature_path] if path.exists() ]
 
         
         if existing_files and not overwrite:
@@ -2152,11 +2154,9 @@ class RangeFeatureExtractor:
         training_features = full_features[model_cols].copy()
     
         full_features = full_features.replace([np.inf, -np.inf], np.nan)
-    
         training_features = training_features.replace([np.inf, -np.inf], np.nan)
     
         full_features.to_parquet(full_feature_path, index=False)
-    
         training_features.to_parquet(training_feature_path, index=False)
     
         print(f"[FEATURE SAVE] Saved full features to: {full_feature_path}")
